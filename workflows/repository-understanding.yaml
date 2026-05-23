@@ -1,0 +1,51 @@
+name: repository-understanding
+description: Autonomous workflow for understanding a GitHub repository from clone to contributor roadmap.
+trigger: "POST /analyze or GET /timeline/stream"
+steps:
+  - id: clone
+    agent: repository-analysis-agent
+    event: "Cloning repository"
+    tool: repo_clone
+  - id: scan
+    agent: repository-analysis-agent
+    event: "Scanning repository structure"
+    tool: repo_scan
+  - id: detect
+    agent: repository-analysis-agent
+    event: "Detecting frameworks and entry points"
+    output: repository_scan
+  - id: map
+    agent: architecture-mapping-agent
+    event: "Mapping architecture and dependency flow"
+    input: repository_scan
+    output: architecture_map
+  - id: onboard
+    agent: onboarding-agent
+    event: "Generating contributor onboarding roadmap"
+    input:
+      - repository_scan
+      - architecture_map
+    output: onboarding_plan
+  - id: intelligence
+    agent: repository-intelligence-agent
+    event: "Scoring complexity, ownership, risk, and good first issues"
+    input:
+      - repository_scan
+      - architecture_map
+    output: repository_intelligence
+  - id: docs
+    agent: documentation-agent
+    event: "Generating repository explanation"
+    input:
+      - repository_scan
+      - architecture_map
+    output: repo_summary
+  - id: remember
+    agent: documentation-agent
+    event: "Persisting repository memory"
+    tool: memory_store
+outputs:
+  - analysis_result
+  - timeline_events
+  - durable_memory
+  - repository_intelligence

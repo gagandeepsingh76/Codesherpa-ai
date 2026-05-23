@@ -1,0 +1,17 @@
+{
+  "repositories": [],
+  "schema": {
+    "repo_id": "stable hash derived from repository URL",
+    "url": "source repository URL",
+    "last_analyzed_at": "ISO timestamp",
+    "frameworks": ["detected framework names"],
+    "architecture_summary": "compact architecture memory",
+    "contributor_notes": ["durable contributor guidance"],
+    "repository_intelligence": {
+      "complexity_score": "0-100 evidence-weighted onboarding complexity",
+      "risk_insights": ["deterministic risk signals"],
+      "ownership_map": ["folder responsibility hints"],
+      "good_first_issues": ["scoped contributor opportunities"]
+    }
+  }
+}

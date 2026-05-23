@@ -1,0 +1,16 @@
+name: repository-intelligence-agent
+role: "Repository Intelligence Agent"
+skill: repository-intelligence
+description: "Scores complexity, maps ownership, identifies risks, and generates good-first-issue candidates."
+inputs:
+  - repository_scan
+  - architecture_map
+outputs:
+  - repository_intelligence
+timeline_events:
+  - "Repository Intelligence Agent initialized"
+  - "Scoring repository complexity"
+  - "Mapping ownership surfaces"
+  - "Generating good first issues"
+  - "Dependency and risk insights completed"
+confidence_policy: "deterministic-evidence-weighted"

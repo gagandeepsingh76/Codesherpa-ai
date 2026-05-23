@@ -1,0 +1,16 @@
+name: repository-analysis-agent
+role: "Repository Analysis Agent"
+skill: repository-analysis
+description: "Scans repository structure, detects frameworks, identifies entry points, and ranks important files."
+inputs:
+  - repository_url
+  - local_checkout_path
+outputs:
+  - repository_scan
+timeline_events:
+  - "Repository Analysis Agent initialized"
+  - "Scanning repository structure"
+  - "Detecting frameworks"
+  - "Identifying entry points"
+  - "Important file ranking completed"
+confidence_policy: "evidence-weighted"

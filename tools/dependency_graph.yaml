@@ -1,0 +1,14 @@
+name: dependency_graph
+description: Build a dependency and folder relationship graph from manifests and scanned paths.
+input_schema:
+  type: object
+  properties:
+    repository_scan:
+      type: object
+      description: Structured scan result.
+  required:
+    - repository_scan
+implementation:
+  service: backend.agents.architecture_mapping.ArchitectureMappingAgent.run
+safety:
+  executes_repository_code: false

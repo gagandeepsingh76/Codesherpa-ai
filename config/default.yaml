@@ -1,0 +1,16 @@
+environment: development
+analysis:
+  max_files: 2500
+  max_file_bytes: 120000
+  excluded_directories:
+    - .git
+    - node_modules
+    - .next
+    - dist
+    - build
+    - .venv
+    - venv
+    - __pycache__
+chat:
+  use_openai_when_available: true
+  fallback_mode: heuristic

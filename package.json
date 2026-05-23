@@ -1,0 +1,29 @@
+{
+  "name": "codesherpa-ai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GitAgent-powered repository understanding platform.",
+  "scripts": {
+    "dev": "python scripts/dev_start.py",
+    "dev:check": "python scripts/dev_start.py --check",
+    "dev:smoke": "python scripts/dev_start.py --smoke-test",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000",
+    "install:backend": "python -m pip install -r requirements.txt",
+    "install:frontend": "npm --prefix frontend install",
+    "lint": "npm --prefix frontend run lint",
+    "typecheck": "npm --prefix frontend run typecheck",
+    "backend:check": "python -m compileall backend",
+    "validate:startup": "python scripts/validate_startup.py"
+  },
+  "keywords": [
+    "gitagent",
+    "ai",
+    "developer-tools",
+    "repository-analysis"
+  ],
+  "engines": {
+    "node": ">=20",
+    "python": ">=3.11"
+  }
+}

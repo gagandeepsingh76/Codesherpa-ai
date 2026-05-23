@@ -1,0 +1,15 @@
+name: issue-debugging-agent
+role: "Issue Debugging Agent"
+skill: issue-debugging
+description: "Maps issue language to likely affected areas and safe debugging directions."
+inputs:
+  - issue_text
+  - repository_scan
+outputs:
+  - debugging_plan
+timeline_events:
+  - "Issue Debugging Agent initialized"
+  - "Extracting issue signals"
+  - "Matching likely affected files"
+  - "Debugging path generated"
+confidence_policy: "keyword-and-path-weighted"

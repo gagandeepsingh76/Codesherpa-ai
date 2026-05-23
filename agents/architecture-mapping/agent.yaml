@@ -1,0 +1,14 @@
+name: architecture-mapping-agent
+role: "Architecture Mapping Agent"
+skill: architecture-mapping
+description: "Builds architecture summaries, folder relationship maps, and frontend/backend boundaries."
+inputs:
+  - repository_scan
+outputs:
+  - architecture_map
+timeline_events:
+  - "Architecture Mapping Agent initialized"
+  - "Mapping folder relationships"
+  - "Detecting system boundaries"
+  - "Building dependency flow"
+confidence_policy: "manifest-and-structure-weighted"

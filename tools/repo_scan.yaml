@@ -1,0 +1,15 @@
+name: repo_scan
+description: Read repository files and manifests to produce a structured repository scan.
+input_schema:
+  type: object
+  properties:
+    repository_path:
+      type: string
+      description: Local checkout path.
+  required:
+    - repository_path
+implementation:
+  service: backend.services.repository_scanner.RepositoryScanner.scan
+safety:
+  executes_repository_code: false
+  max_files: 2500

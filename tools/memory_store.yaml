@@ -1,0 +1,16 @@
+name: memory_store
+description: Persist compact repository memory, architecture summaries, contributor notes, and user questions.
+input_schema:
+  type: object
+  properties:
+    repo_id:
+      type: string
+    memory_entry:
+      type: object
+  required:
+    - repo_id
+    - memory_entry
+implementation:
+  service: backend.services.memory_store.MemoryStore.save_analysis
+safety:
+  stores_full_source: false

@@ -1,0 +1,15 @@
+name: onboarding-agent
+role: "Onboarding Agent"
+skill: onboarding
+description: "Creates beginner onboarding roadmap, first files to read, and contribution sequence."
+inputs:
+  - repository_scan
+  - architecture_map
+outputs:
+  - onboarding_plan
+timeline_events:
+  - "Onboarding Agent initialized"
+  - "Selecting beginner-friendly files"
+  - "Sequencing contributor roadmap"
+  - "First-task recommendations generated"
+confidence_policy: "path-evidence-weighted"

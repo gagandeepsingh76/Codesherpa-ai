@@ -1,0 +1,19 @@
+name: repo_clone
+description: Clone or update a public GitHub repository into CodeSherpa's isolated analysis workspace.
+input_schema:
+  type: object
+  properties:
+    repo_url:
+      type: string
+      description: GitHub repository URL.
+    destination:
+      type: string
+      description: Local checkout path.
+  required:
+    - repo_url
+    - destination
+implementation:
+  service: backend.services.git_service.GitService.clone_or_update
+safety:
+  executes_repository_code: false
+  writes_target_repository: false

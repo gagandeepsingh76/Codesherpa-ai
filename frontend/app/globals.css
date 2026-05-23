@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --background: 220 18% 5%;
+  --foreground: 210 22% 96%;
+  --card: 220 15% 9%;
+  --card-foreground: 210 22% 96%;
+  --muted: 220 12% 15%;
+  --muted-foreground: 215 12% 68%;
+  --primary: 174 74% 50%;
+  --primary-foreground: 220 18% 5%;
+  --accent: 42 92% 56%;
+  --accent-foreground: 220 18% 5%;
+  --border: 216 18% 18%;
+  --input: 216 18% 18%;
+  --ring: 174 74% 50%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(45, 212, 191, 0.16), transparent 28rem),
+    radial-gradient(circle at 78% 4%, rgba(245, 158, 11, 0.12), transparent 24rem),
+    linear-gradient(135deg, #05070a 0%, #0a0d12 48%, #05070a 100%);
+  color: hsl(var(--foreground));
+  font-feature-settings: "rlig" 1, "calt" 1;
+}
+
+::selection {
+  background: rgba(45, 212, 191, 0.28);
+}
+
+.glass-panel {
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.035));
+  box-shadow: 0 24px 90px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(22px);
+}
+
+.premium-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: linear-gradient(to bottom, black, transparent);
+}
+
+.text-balance {
+  text-wrap: balance;
+}
+
+.timeline-mask {
+  mask-image: linear-gradient(to bottom, transparent, black 10%, black 88%, transparent);
+}

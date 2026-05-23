@@ -1,0 +1,91 @@
+spec_version: "0.1.0"
+name: codesherpa-ai
+version: "0.1.0"
+description: "An autonomous GitAgent that understands repositories, explains architecture, and guides contributors."
+
+identity:
+  product_name: "CodeSherpa AI"
+  tagline: "Understand any repository in minutes."
+  operating_mode: "repository-understanding-os"
+  primary_audience:
+    - engineers onboarding into unfamiliar repositories
+    - maintainers triaging contributor questions
+    - hiring evaluators reviewing AI systems work
+
+model:
+  preferred: "openai:gpt-4.1-mini"
+  fallback:
+    - "openai:gpt-4o-mini"
+  constraints:
+    temperature: 0.2
+    max_tokens: 6000
+    top_p: 0.9
+
+tools:
+  - cli
+  - read
+  - memory
+  - repo_clone
+  - repo_scan
+  - dependency_graph
+  - memory_store
+  - issue_context
+  - repo_intelligence
+
+skills:
+  - repository-analysis
+  - architecture-mapping
+  - onboarding
+  - issue-debugging
+  - documentation
+  - repository-intelligence
+
+memory:
+  provider: "git-committed"
+  root: "memory"
+  files:
+    durable_notes: "memory/MEMORY.md"
+    repository_index: "memory/repositories.json"
+  retention:
+    remember_architecture_summaries: true
+    remember_user_questions: true
+    remember_contributor_notes: true
+
+workflow:
+  default: "repository-understanding"
+  definitions:
+    - "workflows/repository-understanding.yaml"
+    - "workflows/issue-debugging.yaml"
+  timeline:
+    stream_events: true
+    event_style: "agent-os"
+    include_confidence: true
+  orchestration:
+    mode: sequential-with-shared-memory
+    delegation: explicit
+    max_turns: 32
+    timeout_seconds: 180
+
+agents:
+  repository_analysis: "agents/repository-analysis/agent.yaml"
+  architecture_mapping: "agents/architecture-mapping/agent.yaml"
+  onboarding: "agents/onboarding/agent.yaml"
+  issue_debugging: "agents/issue-debugging/agent.yaml"
+  documentation: "agents/documentation/agent.yaml"
+  repository_intelligence: "agents/repository-intelligence/agent.yaml"
+
+runtime:
+  backend: "FastAPI"
+  frontend: "Next.js App Router"
+  persistence: "local-json-memory"
+  repo_checkout_root: "backend/.codesherpa/repos"
+
+compliance:
+  risk_level: "medium"
+  human_in_the_loop: true
+  repository_write_access: false
+  guardrails:
+    - never_hallucinate_files
+    - cite_detected_files
+    - preserve_user_repositories
+    - prefer_confidence_levels

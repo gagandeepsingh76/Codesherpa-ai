@@ -1,0 +1,15 @@
+name: documentation-agent
+role: "Documentation Agent"
+skill: documentation
+description: "Summarizes repositories and generates documentation recommendations."
+inputs:
+  - repository_scan
+  - architecture_map
+outputs:
+  - repo_summary
+timeline_events:
+  - "Documentation Agent initialized"
+  - "Reading documentation signals"
+  - "Generating repository explanation"
+  - "Documentation recommendations completed"
+confidence_policy: "readme-and-manifest-weighted"

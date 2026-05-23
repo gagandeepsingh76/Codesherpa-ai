@@ -1,0 +1,19 @@
+name: repo_intelligence
+description: Score complexity, map ownership, identify risk, and generate contribution opportunities from repository scan evidence.
+input_schema:
+  type: object
+  properties:
+    repository_scan:
+      type: object
+      description: Structured repository scan.
+    architecture_map:
+      type: object
+      description: Architecture summary and graph.
+  required:
+    - repository_scan
+    - architecture_map
+implementation:
+  service: backend.agents.repository_intelligence.RepositoryIntelligenceAgent.run
+safety:
+  executes_repository_code: false
+  invents_ownership: false

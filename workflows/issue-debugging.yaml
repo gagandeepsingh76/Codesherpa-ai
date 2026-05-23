@@ -1,0 +1,17 @@
+name: issue-debugging
+description: Autonomous workflow for turning issue text into likely affected files and a debugging path.
+trigger: "chat intent or future issue endpoint"
+steps:
+  - id: parse_issue
+    agent: issue-debugging-agent
+    event: "Extracting issue signals"
+  - id: match_repo
+    agent: issue-debugging-agent
+    event: "Matching issue signals to repository map"
+  - id: propose_path
+    agent: issue-debugging-agent
+    event: "Generating safe debugging path"
+outputs:
+  - likely_affected_files
+  - debugging_steps
+  - confidence
