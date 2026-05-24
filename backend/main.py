@@ -14,12 +14,12 @@ from dotenv import load_dotenv
 
 from backend.api.routes import router
 
-
 load_dotenv(PROJECT_ROOT / ".env")
 
 
 def allowed_origins() -> list[str]:
     configured = os.getenv("CODESHERPA_ALLOWED_ORIGINS", "")
+
     defaults = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
@@ -29,8 +29,15 @@ def allowed_origins() -> list[str]:
         "http://127.0.0.1:3010",
         "http://localhost:3020",
         "http://127.0.0.1:3020",
+        "https://codesherpa-ai.vercel.app",
     ]
-    origins = defaults + [origin.strip().rstrip("/") for origin in configured.split(",") if origin.strip()]
+
+    origins = defaults + [
+        origin.strip().rstrip("/")
+        for origin in configured.split(",")
+        if origin.strip()
+    ]
+
     return list(dict.fromkeys(origins))
 
 
@@ -43,10 +50,20 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins(),
-    allow_origin_regex=os.getenv("CODESHERPA_ALLOW_ORIGIN_REGEX", r"https?://(localhost|127\.0\.0\.1):[0-9]+"),
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.include_router(router)
+
+
+@app.get("/")
+async def root():
+    return {"status": "ok", "service": "codesherpa-ai"}
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "service": "codesherpa-ai"}
