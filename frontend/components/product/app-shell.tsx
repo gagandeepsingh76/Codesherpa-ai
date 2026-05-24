@@ -22,15 +22,15 @@ export function AppShell({
   return (
     <main className="min-h-screen overflow-hidden">
       <div className="pointer-events-none fixed inset-0 premium-grid opacity-45" />
-      <div className="relative mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-5 sm:px-6 lg:px-8">
-        <header className="glass-panel flex items-center justify-between rounded-lg px-4 py-3">
-          <Link href="/" className="flex items-center gap-3">
+      <div className="relative mx-auto flex min-w-0 w-full max-w-7xl flex-col gap-6 px-4 py-5 sm:px-6 lg:px-8">
+        <header className="glass-panel flex flex-wrap items-center justify-between gap-3 rounded-lg px-4 py-3">
+          <Link href="/" className="flex min-w-0 items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-teal-300/20 bg-teal-300/10">
               <Bot className="h-5 w-5 text-teal-200" />
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="text-sm font-semibold text-white">CodeSherpa AI</div>
-              <div className="text-xs text-white/[0.48]">Understand any repository in minutes.</div>
+              <div className="truncate text-xs text-white/[0.48]">Understand any repository in minutes.</div>
             </div>
           </Link>
           <nav className="hidden items-center gap-1 md:flex">
@@ -56,10 +56,10 @@ export function AppShell({
             <Badge variant="neutral" className="hidden sm:inline-flex">
               GitAgent native
             </Badge>
-            <Button asChild size="sm" variant="secondary">
+            <Button asChild size="sm" variant="secondary" className="h-9 w-9 px-0 sm:h-8 sm:w-auto sm:px-3">
               <Link href="/dashboard">
                 <Sparkles className="h-4 w-4" />
-                Analyze
+                <span className="hidden sm:inline">Analyze</span>
               </Link>
             </Button>
           </div>

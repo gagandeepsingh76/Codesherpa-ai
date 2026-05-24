@@ -67,14 +67,17 @@ export function LandingPage() {
                 An AI onboarding and contribution copilot for open-source repositories. Paste a GitHub URL and watch specialized agents clone, scan, map, score, explain, and remember the codebase through a live cinematic workflow.
               </p>
 
-              <div className="mt-8 flex max-w-2xl flex-col gap-3 rounded-lg border border-white/10 bg-black/[0.24] p-3 sm:flex-row">
-                <Input value="https://github.com/vercel/next.js" readOnly aria-label="Repository URL preview" />
-                <Button asChild className="sm:w-[168px]">
-                  <Link href="/dashboard">
-                    Analyze repo
-                    <ArrowRight className="h-4 w-4" />
-                  </Link>
-                </Button>
+              <div className="mt-8 max-w-2xl rounded-lg border border-white/10 bg-black/[0.24] p-3">
+                <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center">
+                  <Input readOnly placeholder="Enter your GitHub repository link..." aria-label="Repository URL preview" className="flex-1 placeholder:text-white/[0.30]" />
+                  <Button asChild className="w-full shrink-0 sm:w-[168px]">
+                    <Link href="/dashboard">
+                      Analyze repo
+                      <ArrowRight className="h-4 w-4" />
+                    </Link>
+                  </Button>
+                </div>
+                <div className="mt-2 px-1 text-xs text-white/[0.42]">Example: github.com/user/repository</div>
               </div>
 
               <div className="mt-8 flex flex-wrap gap-3">

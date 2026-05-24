@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
-from typing import Any
+from pathlib import PurePosixPath
+from typing import Any, Awaitable, Callable
 
 from backend.agents.architecture_mapping import ArchitectureMappingAgent
 from backend.agents.documentation import DocumentationAgent
@@ -11,15 +12,39 @@ from backend.agents.issue_debugging import IssueDebuggingAgent
 from backend.agents.onboarding import OnboardingAgent
 from backend.agents.repository_analysis import RepositoryAnalysisAgent
 from backend.agents.repository_intelligence import RepositoryIntelligenceAgent
-from backend.models import AnalysisResult, ChatResponse, RepositoryScan, TimelineEvent
+from backend.models import (
+    AnalysisResult,
+    ArchitectureMap,
+    ArchitectureNode,
+    ChatResponse,
+    ComplexityScore,
+    ContributorPlan,
+    RepositoryCodeIntelligence,
+    RepositoryIntelligence,
+    RepositoryScan,
+    TimelineEvent,
+)
 from backend.services.git_service import GitService
 from backend.services.gitagent_registry import GitAgentRegistry
-from backend.services.code_intelligence import RepositoryCodeIntelligenceBuilder, RepositorySemanticRetriever
+from backend.services.code_intelligence import CodeIntelligenceWork, RepositoryCodeIntelligenceBuilder, RepositorySemanticRetriever
 from backend.services.llm_service import LLMService
 from backend.services.memory_store import MemoryStore
 from backend.services.repository_scanner import RepositoryScanner
 from backend.services.timeline import TimelineEmitter, TimelineRecorder
 from backend.utils.ids import stable_repo_id
+
+
+AnalysisEmitter = Callable[[str, AnalysisResult], Awaitable[None] | None]
+
+ARCHITECTURE_TIMEOUT_SECONDS = 18
+CLONE_TIMEOUT_SECONDS = 45
+DEEP_INTELLIGENCE_TIMEOUT_SECONDS = 22
+SCAN_TIMEOUT_SECONDS = 10
+SYMBOL_TIMEOUT_SECONDS = 24
+MAX_DEPENDENCY_GRAPH_SOURCE_FILES = 1800
+MAX_SYMBOL_SOURCE_FILES = 1600
+SOURCE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css", ".scss", ".sass", ".html", ".md", ".mdx"}
+CODE_SOURCE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 
 
 class RepositoryUnderstandingWorkflow:
@@ -38,7 +63,13 @@ class RepositoryUnderstandingWorkflow:
         self.documentation_agent = DocumentationAgent()
         self.intelligence_agent = RepositoryIntelligenceAgent()
 
-    async def run(self, repo_url: str, emitter: TimelineEmitter | None = None, use_cache: bool = False) -> AnalysisResult:
+    async def run(
+        self,
+        repo_url: str,
+        emitter: TimelineEmitter | None = None,
+        use_cache: bool = False,
+        result_emitter: AnalysisEmitter | None = None,
+    ) -> AnalysisResult:
         repo_id = stable_repo_id(repo_url)
         timeline = TimelineRecorder(repo_id, emitter)
 
@@ -52,33 +83,37 @@ class RepositoryUnderstandingWorkflow:
 
         if use_cache:
             cached = self.memory.get_analysis_by_url(repo_url)
-            if cached and cached.get("intelligence") and cached.get("code_intelligence", {}).get("semantic_memory"):
-                await timeline.add(
-                    "GitAgent Memory",
-                    "Cached repository intelligence restored",
-                    "Reused persisted architecture, contributor, risk, symbol, route, and semantic memory for a fast repeat analysis.",
-                    confidence="high",
-                )
-                result = AnalysisResult.model_validate(cached)
-                result.timeline = timeline.events + result.timeline
-                return result
             if cached:
                 await timeline.add(
                     "GitAgent Memory",
-                    "Cached memory requires symbol re-indexing",
-                    "Existing memory predates semantic symbol intelligence, so CodeSherpa is rebuilding grounded repository memory.",
-                    confidence="medium",
+                    "Cached repository intelligence restored",
+                    "Reused persisted repository memory immediately instead of repeating a full clone, graph build, and semantic pass.",
+                    confidence="high" if cached.get("code_intelligence", {}).get("semantic_memory") else "medium",
                 )
+                result = AnalysisResult.model_validate(cached)
+                result.timeline = timeline.events + result.timeline
+                result.agent_manifest = self._manifest_public_payload(
+                    "cached",
+                    cache_status="hit",
+                    deep_status="ready" if result.code_intelligence.semantic_memory else "metadata",
+                )
+                await self._emit_result("cached", result, result_emitter)
+                return result
 
         await timeline.add(
             self.repository_agent.name,
-            "Repository Analysis Agent initialized",
-            "Preparing isolated checkout and repository scanner.",
+            "Fast repository analysis started",
+            "Preparing an isolated shallow checkout, manifest scan, and root-only dashboard shell.",
             status="running",
             confidence="high",
+            metadata={"phase": "phase1-fast"},
         )
 
-        repo_path = await self.git.clone_or_update(repo_url)
+        repo_path = await self._with_timeout(
+            self.git.clone_or_update(repo_url),
+            CLONE_TIMEOUT_SECONDS,
+            "Repository checkout timed out before analysis could start.",
+        )
         await timeline.add(
             self.repository_agent.name,
             "Cloning repository",
@@ -93,16 +128,29 @@ class RepositoryUnderstandingWorkflow:
             "Reading manifests and canonical config files.",
             status="running",
             confidence="medium",
+            metadata={"phase": "phase1-fast"},
         )
 
-        scan = await asyncio.to_thread(self.scanner.scan, repo_url, repo_path, default_branch)
+        scan = await self._with_timeout(
+            asyncio.to_thread(self.scanner.scan, repo_url, repo_path, default_branch),
+            SCAN_TIMEOUT_SECONDS,
+            "Repository scan timed out while indexing manifests and top-level files.",
+        )
         await timeline.add(
             self.repository_agent.name,
             "Scanning repository structure",
             f"Indexed {len(scan.files)} files across {len(scan.folders)} top-level areas.",
             confidence=scan.confidence,
-            metadata={"languages": scan.languages, "frameworks": scan.frameworks},
+            metadata={"languages": scan.languages, "frameworks": scan.frameworks, "phase": "phase1-fast"},
         )
+        if len(scan.files) >= self.scanner.max_files:
+            await timeline.add(
+                "Repository Safeguards",
+                "Large repository cap applied",
+                f"Initial scan capped at {self.scanner.max_files:,} files so the dashboard stays responsive.",
+                confidence="medium",
+                metadata={"phase": "phase1-fast", "max_files": self.scanner.max_files},
+            )
 
         summary = self.repository_agent.run(scan)
         await timeline.add(
@@ -110,71 +158,191 @@ class RepositoryUnderstandingWorkflow:
             "Identifying important files",
             f"Ranked {len(summary.important_files)} important files and {len(summary.entry_points)} entry points.",
             confidence=summary.confidence,
+            metadata={"phase": "phase1-fast"},
         )
 
+        architecture = self._root_architecture(scan)
+        contributor_plan = self._shell_contributor_plan(scan)
+        intelligence = self._shell_intelligence(scan, architecture)
+        code_intelligence = self._shell_code_intelligence(scan)
+        phase1_result = self._analysis_result(
+            repo_id,
+            repo_url,
+            summary,
+            architecture,
+            contributor_plan,
+            intelligence,
+            code_intelligence,
+            timeline,
+            phase="phase1",
+            deep_status="queued",
+        )
+        await timeline.add(
+            "Dashboard Runtime",
+            "Dashboard shell ready",
+            "Real repository metadata, framework signals, manifests, and architecture roots are ready while deeper intelligence streams in.",
+            confidence="high",
+            metadata={"phase": "phase1-fast"},
+        )
+        phase1_result.timeline = list(timeline.events)
+        await self._emit_result("phase1", phase1_result, result_emitter)
+
+        source_file_count = self._source_file_count(scan)
         await timeline.add(
             self.architecture_agent.name,
-            "Architecture Mapping Agent initialized",
-            "Converting scan evidence into an architecture graph.",
+            "Architecture relationships queued",
+            "Building dependency relationships after the dashboard shell is already visible.",
             status="running",
             confidence="high",
+            metadata={"phase": "phase2-background", "source_files": source_file_count},
         )
-        architecture = self.architecture_agent.run(scan)
-        await timeline.add(
-            self.architecture_agent.name,
-            "Building dependency graph",
-            f"Generated {len(architecture.nodes)} nodes and {len(architecture.edges)} relationship edges.",
-            confidence=architecture.confidence,
-        )
+        if source_file_count > MAX_DEPENDENCY_GRAPH_SOURCE_FILES:
+            await timeline.add(
+                "Repository Safeguards",
+                "Dependency graph sampled",
+                (
+                    f"{source_file_count:,} source-like files were detected. "
+                    "CodeSherpa kept the initial architecture-root graph to avoid blocking the dashboard."
+                ),
+                confidence="medium",
+                metadata={"phase": "phase2-background", "source_files": source_file_count},
+            )
+        else:
+            try:
+                mapped_architecture = await self._with_timeout(
+                    asyncio.to_thread(self.architecture_agent.run, scan),
+                    ARCHITECTURE_TIMEOUT_SECONDS,
+                    "Dependency graph analysis exceeded the background budget.",
+                )
+                if mapped_architecture.nodes:
+                    architecture = mapped_architecture
+                else:
+                    architecture.graph_metrics["background_graph_empty"] = True
+                await timeline.add(
+                    self.architecture_agent.name,
+                    "Building dependency graph",
+                    f"Generated {len(architecture.nodes)} nodes and {len(architecture.edges)} relationship edges.",
+                    confidence=architecture.confidence,
+                    metadata={"phase": "phase2-background"},
+                )
+            except Exception as exc:
+                await timeline.add(
+                    self.architecture_agent.name,
+                    "Dependency graph deferred",
+                    f"{exc} The root architecture map remains available.",
+                    status="failed",
+                    confidence="medium",
+                    metadata={"phase": "phase2-background"},
+                )
         await timeline.add(
             self.architecture_agent.name,
             "Detecting system boundaries",
             "Classified frontend, backend, shared, tests, docs, and infrastructure areas.",
             confidence=architecture.confidence,
+            metadata={"phase": "phase2-background"},
         )
 
+        code_work: CodeIntelligenceWork | None = None
         await timeline.add(
             "Symbol Intelligence Engine",
-            "Extracting code symbols and runtime intelligence",
-            "Parsing Python AST plus TypeScript/JavaScript symbols, routes, middleware, auth, state, environment, and runtime boundaries.",
+            "Extracting route and symbol intelligence",
+            "Parsing code for concrete symbols, runtime entry points, and API route definitions in the background.",
             status="running",
             confidence="high",
+            metadata={"phase": "phase2-background", "source_files": self._code_source_file_count(scan)},
         )
-        code_intelligence = await asyncio.to_thread(self.code_intelligence.analyze, scan, architecture)
+        try:
+            code_intelligence, code_work = await self._with_timeout(
+                asyncio.to_thread(self.code_intelligence.analyze_symbols, scan, architecture, MAX_SYMBOL_SOURCE_FILES),
+                SYMBOL_TIMEOUT_SECONDS,
+                "Symbol and route extraction exceeded the background budget.",
+            )
+        except Exception as exc:
+            await timeline.add(
+                "Symbol Intelligence Engine",
+                "Symbol extraction deferred",
+                f"{exc} Semantic memory can be rebuilt on a later cached run.",
+                status="failed",
+                confidence="medium",
+                metadata={"phase": "phase2-background"},
+            )
         await timeline.add(
             "Symbol Intelligence Engine",
-            "Semantic repository memory built",
+            "Routes and symbols indexed",
             (
-                f"Indexed {len(code_intelligence.symbols)} symbols, {len(code_intelligence.routes)} routes, "
-                f"and {len(code_intelligence.semantic_memory)} grounded memory items."
+                f"Indexed {len(code_intelligence.symbols)} symbols and {len(code_intelligence.routes)} routes. "
+                "Semantic memory and reasoning run lazily next."
             ),
             confidence=code_intelligence.confidence,
-            metadata=code_intelligence.retrieval_stats,
+            metadata={**code_intelligence.retrieval_stats, "phase": "phase2-background"},
         )
+        phase2_result = self._analysis_result(
+            repo_id,
+            repo_url,
+            summary,
+            architecture,
+            contributor_plan,
+            intelligence,
+            code_intelligence,
+            timeline,
+            phase="phase2",
+            deep_status="running",
+        )
+        await self._emit_result("phase2", phase2_result, result_emitter)
 
         await timeline.add(
             self.onboarding_agent.name,
-            "Onboarding Agent initialized",
-            "Building a contributor-first learning sequence.",
+            "Deep repository intelligence queued",
+            "Building contributor guidance, semantic memory, auth/state reasoning, and risk signals after first render.",
             status="running",
             confidence="high",
+            metadata={"phase": "phase3-deep"},
         )
-        contributor_plan = self.onboarding_agent.run(scan)
+        contributor_plan = await asyncio.to_thread(self.onboarding_agent.run, scan)
         await timeline.add(
             self.onboarding_agent.name,
             "Generating onboarding guide",
             f"Created {len(contributor_plan.roadmap)} roadmap steps and {len(contributor_plan.recommended_tasks)} first tasks.",
             confidence=contributor_plan.confidence,
+            metadata={"phase": "phase3-deep"},
         )
+
+        if code_work:
+            try:
+                code_intelligence = await self._with_timeout(
+                    asyncio.to_thread(self.code_intelligence.finalize, scan, architecture, code_work),
+                    DEEP_INTELLIGENCE_TIMEOUT_SECONDS,
+                    "Semantic memory analysis exceeded the lazy deep-analysis budget.",
+                )
+                await timeline.add(
+                    "Symbol Intelligence Engine",
+                    "Semantic repository memory built",
+                    (
+                        f"Indexed {len(code_intelligence.semantic_memory)} grounded memory items with "
+                        f"{len(code_intelligence.auth.files)} auth file signals and {len(code_intelligence.state.libraries)} state libraries."
+                    ),
+                    confidence=code_intelligence.confidence,
+                    metadata=code_intelligence.retrieval_stats,
+                )
+            except Exception as exc:
+                await timeline.add(
+                    "Symbol Intelligence Engine",
+                    "Semantic repository memory deferred",
+                    f"{exc} Route and symbol intelligence remain available.",
+                    status="failed",
+                    confidence="medium",
+                    metadata={"phase": "phase3-deep"},
+                )
 
         await timeline.add(
             self.intelligence_agent.name,
-            "Repository Intelligence Agent initialized",
+            "Repository Intelligence Agent running",
             "Scoring complexity, mapping ownership, and generating contribution opportunities.",
             status="running",
             confidence="high",
+            metadata={"phase": "phase3-deep"},
         )
-        intelligence = self.intelligence_agent.run(scan, architecture)
+        intelligence = await asyncio.to_thread(self.intelligence_agent.run, scan, architecture)
         contributor_plan.good_first_issues = intelligence.good_first_issues
         contributor_plan.contribution_paths = intelligence.contribution_paths
         await timeline.add(
@@ -182,13 +350,14 @@ class RepositoryUnderstandingWorkflow:
             "Good first issues generated",
             f"Created {len(intelligence.good_first_issues)} scoped issues and {len(intelligence.contribution_paths)} contribution paths.",
             confidence=intelligence.confidence,
+            metadata={"phase": "phase3-deep"},
         )
         await timeline.add(
             self.intelligence_agent.name,
             "Complexity and risk model completed",
             f"Complexity scored {intelligence.complexity.score}/100 with {len(intelligence.risks)} risk insights.",
             confidence=intelligence.confidence,
-            metadata={"complexity": intelligence.complexity.model_dump(mode="json")},
+            metadata={"complexity": intelligence.complexity.model_dump(mode="json"), "phase": "phase3-deep"},
         )
 
         await timeline.add(
@@ -197,6 +366,7 @@ class RepositoryUnderstandingWorkflow:
             "Preparing durable repository explanation and documentation recommendations.",
             status="running",
             confidence="high",
+            metadata={"phase": "phase3-deep"},
         )
         summary.recommendations = list(
             dict.fromkeys(summary.recommendations + self.documentation_agent.recommendations(scan, architecture))
@@ -206,9 +376,71 @@ class RepositoryUnderstandingWorkflow:
             "Contributor analysis completed",
             "Repository summary, architecture map, onboarding plan, and memory payload are ready.",
             confidence="high",
+            metadata={"phase": "phase3-deep"},
         )
 
-        result = AnalysisResult(
+        result = self._analysis_result(
+            repo_id,
+            repo_url,
+            summary,
+            architecture,
+            contributor_plan,
+            intelligence,
+            code_intelligence,
+            timeline,
+            phase="complete",
+            deep_status="ready" if code_intelligence.semantic_memory else "partial",
+        )
+        self.memory.save_analysis(result)
+        await timeline.add(
+            "GitAgent Memory",
+            "Persistent memory updated",
+            "Stored compact repository facts, architecture summary, contributor notes, and timeline events.",
+            confidence="high",
+            metadata={"phase": "complete"},
+        )
+        result.timeline = timeline.events
+        result.agent_manifest = self._manifest_public_payload(
+            "complete",
+            cache_status="stored",
+            deep_status="ready" if code_intelligence.semantic_memory else "partial",
+        )
+        self.memory.save_analysis(result)
+        return result
+
+    async def _with_timeout(self, awaitable: Awaitable[Any], seconds: int, message: str) -> Any:
+        try:
+            return await asyncio.wait_for(awaitable, timeout=seconds)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(message) from exc
+
+    async def _emit_result(
+        self,
+        stage: str,
+        result: AnalysisResult,
+        result_emitter: AnalysisEmitter | None,
+    ) -> None:
+        if not result_emitter:
+            return
+        maybe = result_emitter(stage, result)
+        if maybe is not None:
+            await maybe
+
+    def _analysis_result(
+        self,
+        repo_id: str,
+        repo_url: str,
+        summary: Any,
+        architecture: ArchitectureMap,
+        contributor_plan: ContributorPlan,
+        intelligence: RepositoryIntelligence,
+        code_intelligence: RepositoryCodeIntelligence,
+        timeline: TimelineRecorder,
+        *,
+        phase: str,
+        deep_status: str,
+    ) -> AnalysisResult:
+        return AnalysisResult(
             repo_id=repo_id,
             repo_url=repo_url,
             analyzed_at=datetime.now(timezone.utc),
@@ -217,19 +449,205 @@ class RepositoryUnderstandingWorkflow:
             contributor_plan=contributor_plan,
             intelligence=intelligence,
             code_intelligence=code_intelligence,
-            timeline=timeline.events,
-            agent_manifest=self._manifest_public_payload(),
+            timeline=list(timeline.events),
+            agent_manifest=self._manifest_public_payload(phase, deep_status=deep_status),
         )
-        self.memory.save_analysis(result)
-        await timeline.add(
-            "GitAgent Memory",
-            "Persistent memory updated",
-            "Stored compact repository facts, architecture summary, contributor notes, and timeline events.",
-            confidence="high",
+
+    def _root_architecture(self, scan: RepositoryScan) -> ArchitectureMap:
+        nodes = [
+            ArchitectureNode(
+                id=folder.path,
+                label=folder.path,
+                type=self._node_type_for_role(folder.role),
+                description=folder.description,
+                confidence=folder.confidence,
+                role=folder.role,
+                framework=scan.frameworks[0] if scan.frameworks and folder.role in {"frontend", "backend", "shared"} else None,
+                entrypoint=any(entry == folder.path or entry.startswith(f"{folder.path}/") for entry in scan.entry_points),
+                dependency_count=0,
+                ownership_score=round(min(0.95, 0.25 + folder.file_count / max(1, len(scan.files))), 2),
+                runtime_classification="architecture root",
+                group=folder.role,
+                metadata={"file_count": folder.file_count, "analysis_phase": "roots"},
+            )
+            for folder in scan.folders[:12]
+        ]
+        if scan.manifests:
+            nodes.append(
+                ArchitectureNode(
+                    id="manifests",
+                    label="manifests",
+                    type="config",
+                    description="Dependency manifests and framework configuration detected during the fast scan.",
+                    confidence="high",
+                    role="configuration",
+                    dependency_count=0,
+                    ownership_score=0.35,
+                    runtime_classification="configuration",
+                    group="config",
+                    metadata={"files": sorted(scan.manifests)[:10], "analysis_phase": "roots"},
+                )
+            )
+        deployment_files = self._deployment_files(scan)
+        if deployment_files:
+            nodes.append(
+                ArchitectureNode(
+                    id="deployment",
+                    label="deployment",
+                    type="infra",
+                    description="Deployment, CI, or runtime operation files detected in the repository root scan.",
+                    confidence="medium",
+                    role="deployment",
+                    dependency_count=0,
+                    ownership_score=0.3,
+                    runtime_classification="operations",
+                    group="infra",
+                    metadata={"files": deployment_files[:10], "analysis_phase": "roots"},
+                )
+            )
+        if not nodes:
+            nodes.append(
+                ArchitectureNode(
+                    id="repository",
+                    label=scan.name,
+                    type="package",
+                    description="Repository root detected. More structure will appear as analysis progresses.",
+                    confidence=scan.confidence,
+                    role="repository",
+                    metadata={"analysis_phase": "roots"},
+                )
+            )
+
+        frameworks = ", ".join(scan.frameworks[:4]) if scan.frameworks else "framework detection is still sparse"
+        boundaries = [
+            f"{folder.path} is a {folder.role} root with {folder.file_count} indexed files."
+            for folder in scan.folders[:5]
+        ]
+        dependency_flow = [
+            "Fast phase renders architecture roots only.",
+            "Dependency relationships, symbols, routes, and semantic memory stream after first render.",
+        ]
+        if scan.entry_points:
+            dependency_flow.append(f"Runtime entry-point scan starts at {', '.join(scan.entry_points[:3])}.")
+        return ArchitectureMap(
+            summary=(
+                f"Fast scan found {len(scan.files)} files across {len(scan.folders)} top-level areas. "
+                f"Detected stack signal: {frameworks}. Relationship mapping is running in the background."
+            ),
+            boundaries=boundaries or ["Repository roots are being inferred from manifests and top-level files."],
+            nodes=nodes,
+            edges=[],
+            dependency_flow=dependency_flow,
+            confidence=scan.confidence,
+            framework_signals=[f"{framework}: manifest or config signal" for framework in scan.frameworks[:8]],
+            graph_metrics={
+                "analysis_phase": "roots",
+                "nodes": len(nodes),
+                "edges": 0,
+                "files_indexed": len(scan.files),
+                "manifest_count": len(scan.manifests),
+            },
+            topology={"analysis_phase": "roots", "root_count": len(nodes)},
         )
-        result.timeline = timeline.events
-        self.memory.save_analysis(result)
-        return result
+
+    def _shell_contributor_plan(self, scan: RepositoryScan) -> ContributorPlan:
+        return ContributorPlan(
+            roadmap=[],
+            beginner_files=scan.important_files[:6],
+            recommended_tasks=[],
+            good_first_issues=[],
+            contribution_paths=[],
+            learning_sequence=["Fast scan", "Architecture roots", "Dependency graph", "Semantic memory", "Contributor intelligence"],
+            confidence="medium" if scan.files else "low",
+        )
+
+    def _shell_intelligence(self, scan: RepositoryScan, architecture: ArchitectureMap) -> RepositoryIntelligence:
+        score = min(100, max(4 if scan.files else 0, int(len(scan.files) / 45) + len(scan.frameworks) * 4 + len(scan.folders) * 2))
+        if score < 25:
+            level = "approachable"
+        elif score < 50:
+            level = "moderate"
+        elif score < 75:
+            level = "complex"
+        else:
+            level = "advanced"
+        return RepositoryIntelligence(
+            complexity=ComplexityScore(
+                score=score,
+                level=level,
+                summary="Initial complexity estimate from manifests, languages, and top-level roots. Deep scoring is still running.",
+                drivers=[
+                    f"{len(scan.files)} indexed files",
+                    f"{len(scan.languages)} language families",
+                    f"{len(scan.frameworks)} framework signals",
+                    f"{len(architecture.nodes)} architecture roots",
+                ],
+            ),
+            risks=[],
+            ownership=[],
+            dependency_insights=[],
+            good_first_issues=[],
+            contribution_paths=[],
+            architecture_brief=architecture.summary,
+            demo_headline=f"Fast-mapped {scan.name} into repository roots and manifest signals.",
+            confidence="medium" if scan.files else "low",
+        )
+
+    def _shell_code_intelligence(self, scan: RepositoryScan) -> RepositoryCodeIntelligence:
+        return RepositoryCodeIntelligence(
+            runtime={
+                "entry_points": scan.entry_points[:20],
+                "frameworks": scan.frameworks,
+                "analysis_phase": "metadata",
+            },
+            deployment={
+                "files": self._deployment_files(scan),
+                "targets": [],
+                "manifests": {},
+                "analysis_phase": "metadata",
+            },
+            retrieval_stats={
+                "source_files_analyzed": 0,
+                "symbols_indexed": 0,
+                "routes_indexed": 0,
+                "memory_items": 0,
+                "analysis_phase": "metadata",
+            },
+            confidence="low",
+        )
+
+    @staticmethod
+    def _node_type_for_role(role: str) -> str:
+        role_map = {
+            "frontend": "frontend",
+            "backend": "backend",
+            "shared": "shared",
+            "data": "data",
+            "infra": "infra",
+            "docs": "docs",
+            "tests": "tests",
+            "config": "config",
+            "manifest": "config",
+            "application": "shared",
+        }
+        return role_map.get(role, "package")
+
+    @staticmethod
+    def _deployment_files(scan: RepositoryScan) -> list[str]:
+        names = {"Dockerfile", "docker-compose.yml", "docker-compose.yaml", "render.yaml", "render.yml", "vercel.json"}
+        return [
+            file
+            for file in scan.files
+            if PurePosixPath(file).name in names or file.startswith(".github/workflows/")
+        ][:16]
+
+    @staticmethod
+    def _source_file_count(scan: RepositoryScan) -> int:
+        return sum(1 for file in scan.files if PurePosixPath(file).suffix.lower() in SOURCE_EXTENSIONS)
+
+    @staticmethod
+    def _code_source_file_count(scan: RepositoryScan) -> int:
+        return sum(1 for file in scan.files if PurePosixPath(file).suffix.lower() in CODE_SOURCE_EXTENSIONS)
 
     async def chat(self, repo_id: str, message: str) -> ChatResponse:
         analysis = self.memory.get_analysis(repo_id)
@@ -305,14 +723,29 @@ class RepositoryUnderstandingWorkflow:
         analysis = self.memory.get_analysis(repo_id)
         return analysis.get("summary") if analysis else None
 
-    def _manifest_public_payload(self) -> dict[str, Any]:
+    def _manifest_public_payload(
+        self,
+        phase: str = "complete",
+        *,
+        cache_status: str = "miss",
+        deep_status: str = "ready",
+    ) -> dict[str, Any]:
         manifest = self.registry.manifest.copy()
+        workflow = dict(manifest.get("workflow") or {})
+        workflow.update(
+            {
+                "analysis_phase": phase,
+                "cache_status": cache_status,
+                "deep_status": deep_status,
+                "progressive_intelligence": True,
+            }
+        )
         return {
             "name": manifest.get("name"),
             "version": manifest.get("version"),
             "skills": manifest.get("skills", []),
             "tools": manifest.get("tools", []),
-            "workflow": manifest.get("workflow", {}),
+            "workflow": workflow,
             "agents": list((manifest.get("agents") or {}).keys()),
         }
 

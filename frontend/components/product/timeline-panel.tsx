@@ -253,7 +253,7 @@ export function TimelinePanel({
   const consoleLayout = layout === "console";
 
   return (
-    <section className="glass-panel h-fit overflow-hidden rounded-lg">
+    <section className="glass-panel h-fit min-w-0 overflow-hidden rounded-lg">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-teal-300/18 bg-teal-300/10">

@@ -14,6 +14,7 @@ from backend.models import (
     ArchitectureMap,
     ChatResponse,
     CodeSymbol,
+    Confidence,
     RepositoryCodeIntelligence,
     RepositoryScan,
     RouteEndpoint,
@@ -93,15 +94,83 @@ class FileIntelligence:
         ]
 
 
+@dataclass
+class CodeIntelligenceWork:
+    source_files: list[str]
+    parsed: dict[str, FileIntelligence]
+    symbols: list[CodeSymbol]
+    routes: list[RouteEndpoint]
+    capped: bool = False
+
+
 class RepositoryCodeIntelligenceBuilder:
     def analyze(self, scan: RepositoryScan, architecture: ArchitectureMap | None = None) -> RepositoryCodeIntelligence:
+        return self.finalize(scan, architecture, self.collect(scan))
+
+    def collect(self, scan: RepositoryScan, max_source_files: int | None = None) -> CodeIntelligenceWork:
         repo_path = Path(scan.path)
         source_files = [file for file in scan.files if PurePosixPath(file).suffix.lower() in SOURCE_EXTENSIONS]
+        capped = max_source_files is not None and len(source_files) > max_source_files
+        if max_source_files is not None:
+            source_files = source_files[:max_source_files]
         parsed = self._parse_files(repo_path, source_files)
 
         symbols = [symbol for file_info in parsed.values() for symbol in file_info.symbols]
         routes = [route for file_info in parsed.values() for route in file_info.routes]
         self._connect_symbol_graph(symbols, parsed)
+
+        return CodeIntelligenceWork(
+            source_files=source_files,
+            parsed=parsed,
+            symbols=symbols,
+            routes=routes,
+            capped=capped,
+        )
+
+    def analyze_symbols(
+        self,
+        scan: RepositoryScan,
+        architecture: ArchitectureMap | None = None,
+        max_source_files: int | None = None,
+    ) -> tuple[RepositoryCodeIntelligence, CodeIntelligenceWork]:
+        work = self.collect(scan, max_source_files=max_source_files)
+        runtime = self._runtime_map(scan, architecture, work.symbols, work.routes, work.parsed)
+        deployment = self._deployment_map(scan)
+        symbol_graph = self._symbol_graph(work.symbols, work.routes, work.parsed)
+        symbol_graph.update({"partial": True, "capped": work.capped})
+
+        confidence: Confidence = "medium" if work.symbols or work.routes else "low"
+        return (
+            RepositoryCodeIntelligence(
+                symbols=work.symbols[:1600],
+                symbol_graph=symbol_graph,
+                routes=work.routes[:400],
+                runtime=runtime,
+                deployment=deployment,
+                retrieval_stats={
+                    "source_files_analyzed": len(work.source_files),
+                    "symbols_indexed": len(work.symbols),
+                    "routes_indexed": len(work.routes),
+                    "memory_items": 0,
+                    "engine": "codesherpa-symbolic-rag-v1",
+                    "analysis_phase": "symbols-routes",
+                    "capped": work.capped,
+                },
+                confidence=confidence,
+            ),
+            work,
+        )
+
+    def finalize(
+        self,
+        scan: RepositoryScan,
+        architecture: ArchitectureMap | None = None,
+        work: CodeIntelligenceWork | None = None,
+    ) -> RepositoryCodeIntelligence:
+        work = work or self.collect(scan)
+        parsed = work.parsed
+        symbols = work.symbols
+        routes = work.routes
 
         auth = self._auth_flow(scan, parsed, symbols, routes)
         state = self._state_flow(scan, symbols, parsed)
@@ -120,12 +189,14 @@ class RepositoryCodeIntelligenceBuilder:
             deployment=deployment,
             semantic_memory=memory[:1200],
             retrieval_stats={
-                "source_files_analyzed": len(source_files),
+                "source_files_analyzed": len(work.source_files),
                 "symbols_indexed": len(symbols),
                 "routes_indexed": len(routes),
                 "memory_items": len(memory),
                 "engine": "codesherpa-symbolic-rag-v1",
                 "embedding_mode": "local lexical vectors",
+                "analysis_phase": "semantic-memory",
+                "capped": work.capped,
             },
             confidence=confidence,
         )

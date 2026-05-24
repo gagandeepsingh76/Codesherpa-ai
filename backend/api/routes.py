@@ -39,9 +39,12 @@ async def timeline_stream(repo_url: str = Query(..., min_length=10), use_cache: 
     async def emit(event: TimelineEvent) -> None:
         await queue.put(sse("timeline", event.model_dump(mode="json")))
 
+    async def emit_result(stage: str, result: AnalysisResult) -> None:
+        await queue.put(sse("analysis", {"stage": stage, "result": result.model_dump(mode="json")}))
+
     async def run_analysis() -> None:
         try:
-            result = await workflow.run(repo_url, emit, use_cache=use_cache)
+            result = await workflow.run(repo_url, emit, use_cache=use_cache, result_emitter=emit_result)
             await queue.put(sse("complete", result.model_dump(mode="json")))
         except Exception as exc:
             await queue.put(sse("error", {"message": str(exc)}))
