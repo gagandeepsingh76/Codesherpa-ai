@@ -1,6 +1,11 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import type {
+  ChangeEvent,
+  KeyboardEvent,
+  MouseEvent,
+} from "react";
 import { motion } from "framer-motion";
 import {
   ArrowRight,
@@ -80,7 +85,7 @@ export function RepositoryDashboard() {
 
   const deepStatus =
     typeof analysis.agent_manifest.workflow.deep_status ===
-    "string"
+      "string"
       ? analysis.agent_manifest.workflow.deep_status
       : "ready";
 
@@ -101,6 +106,10 @@ export function RepositoryDashboard() {
   );
 
   async function handleAnalyze() {
+    if (isAnalyzing) {
+      return;
+    }
+
     const normalizedRepoUrl =
       normalizeRepositoryUrl(repoUrl);
 
@@ -153,6 +162,42 @@ export function RepositoryDashboard() {
     }
   }
 
+  function handleRepoUrlChange(
+    event: ChangeEvent<HTMLInputElement>,
+  ) {
+    setRepoUrl(event.currentTarget.value);
+  }
+
+  function handleRepoUrlKeyDown(
+    event: KeyboardEvent<HTMLInputElement>,
+  ) {
+    if (event.key !== "Enter") {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (!canAnalyze) {
+      return;
+    }
+
+    void handleAnalyze();
+  }
+
+  function handleAnalyzeButtonClick(
+    event: MouseEvent<HTMLButtonElement>,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (!canAnalyze) {
+      return;
+    }
+
+    void handleAnalyze();
+  }
+
   return (
     <div className="min-w-0 space-y-6">
       <section className="grid min-w-0 items-start gap-6 xl:grid-cols-[minmax(0,0.95fr)_minmax(520px,1.05fr)] 2xl:grid-cols-[minmax(0,0.95fr)_minmax(600px,1.05fr)]">
@@ -185,55 +230,45 @@ export function RepositoryDashboard() {
                 </p>
               </div>
 
-              <div className="rounded-lg border border-teal-300/20 bg-teal-300/10 px-3 py-2 font-mono text-xs text-teal-100">
+              <div className="max-w-full rounded-lg border border-teal-300/20 bg-teal-300/10 px-3 py-2 font-mono text-xs text-teal-100">
                 {analysis.repo_id}
               </div>
             </div>
 
-            {/* FIXED INPUT SECTION */}
-
-            <div className="rounded-2xl border border-white/10 bg-black/[0.24] p-4">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-                <div className="min-w-0 flex-1">
+            <div
+              className="pointer-events-auto relative z-10 w-full rounded-lg border border-white/10 bg-black/[0.24] p-3 sm:p-4"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="grid min-w-0 gap-3 sm:grid-cols-[minmax(0,1fr)_188px] sm:items-start">
+                <div className="min-w-0">
                   <Input
-                    type="text"
-                    autoComplete="off"
+                    id="repository-url"
+                    name="repository-url"
+                    type="url"
+                    inputMode="url"
+                    autoCapitalize="none"
+                    autoComplete="url"
+                    autoCorrect="off"
                     spellCheck={false}
                     value={repoUrl}
-                    onChange={(event) =>
-                      setRepoUrl(
-                        event.target.value,
-                      )
-                    }
-                    onKeyDown={(event) => {
-                      if (
-                        event.key === "Enter" &&
-                        canAnalyze
-                      ) {
-                        event.preventDefault();
-                        handleAnalyze();
-                      }
-                    }}
+                    onChange={handleRepoUrlChange}
+                    onKeyDown={handleRepoUrlKeyDown}
                     placeholder="Enter your GitHub repository link..."
                     aria-label="GitHub repository URL"
-                    className="h-12 w-full rounded-xl border border-white/10 bg-black/[0.38] px-4 text-sm text-white outline-none transition-all duration-200 placeholder:text-white/[0.32] focus:border-teal-300/60 focus:ring-2 focus:ring-teal-300/20"
+                    className="h-12 w-full rounded-lg border border-white/10 bg-black/[0.38] px-4 text-sm text-white outline-none transition-all duration-200 placeholder:text-white/[0.32] focus:border-teal-300/60 focus:ring-2 focus:ring-teal-300/20"
                   />
 
                   <div className="mt-2 px-1 text-xs text-white/[0.42]">
-                    Example:
-                    github.com/user/repository
+                    Example: github.com/user/repository
                   </div>
                 </div>
 
                 <Button
                   type="button"
                   disabled={!canAnalyze}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    handleAnalyze();
-                  }}
-                  className="h-12 min-w-[170px] rounded-xl bg-teal-300 text-black transition-all duration-200 hover:bg-teal-200 disabled:opacity-60"
+                  aria-busy={isAnalyzing}
+                  onClick={handleAnalyzeButtonClick}
+                  className="h-12 w-full rounded-lg bg-teal-300 text-black transition-all duration-200 hover:bg-teal-200 disabled:opacity-60 sm:w-[188px]"
                 >
                   {isAnalyzing ? (
                     <>
@@ -249,8 +284,6 @@ export function RepositoryDashboard() {
                 </Button>
               </div>
             </div>
-
-            {/* END FIX */}
 
             {error ? (
               <div className="rounded-lg border border-red-300/20 bg-red-300/10 px-4 py-3 text-sm text-red-100">

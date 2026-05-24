@@ -16,6 +16,7 @@
     "@radix-ui/react-slot": "^1.2.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "codesherpa-ai": "file:..",
     "d3-force": "^3.0.0",
     "d3-selection": "^3.0.0",
     "d3-transition": "^3.0.1",
