@@ -95,7 +95,7 @@ flowchart LR
 ## AI Agent Timeline
 
 <p align="center">
-<img width="488" height="546" alt="image" src="https://github.com/user-attachments/assets/9a407769-80b9-4422-897c-d40bee904b1a" />
+<img width="639" height="541" alt="image" src="https://github.com/user-attachments/assets/69930f63-966b-4a05-a0aa-f16cf83f696a" />
 </p>
 
 ---
