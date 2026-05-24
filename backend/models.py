@@ -51,6 +51,16 @@ class ArchitectureNode(BaseModel):
     type: Literal["frontend", "backend", "shared", "data", "infra", "docs", "tests", "config", "package"]
     description: str
     confidence: Confidence
+    role: str | None = None
+    framework: str | None = None
+    entrypoint: bool = False
+    dependency_count: int = 0
+    ownership_score: float = 0.0
+    runtime_classification: str | None = None
+    group: str | None = None
+    x: float | None = None
+    y: float | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ArchitectureEdge(BaseModel):
@@ -58,6 +68,11 @@ class ArchitectureEdge(BaseModel):
     target: str
     label: str
     confidence: Confidence
+    weight: float = 1.0
+    kind: str = "dependency"
+    reasons: list[str] = Field(default_factory=list)
+    files: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ArchitectureMap(BaseModel):
@@ -67,6 +82,8 @@ class ArchitectureMap(BaseModel):
     edges: list[ArchitectureEdge]
     dependency_flow: list[str]
     confidence: Confidence
+    framework_signals: list[str] = Field(default_factory=list)
+    graph_metrics: dict[str, Any] = Field(default_factory=dict)
 
 
 class OnboardingStep(BaseModel):

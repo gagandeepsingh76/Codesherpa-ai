@@ -32,6 +32,16 @@ export type ArchitectureNode = {
   type: "frontend" | "backend" | "shared" | "data" | "infra" | "docs" | "tests" | "config" | "package";
   description: string;
   confidence: Confidence;
+  role?: string | null;
+  framework?: string | null;
+  entrypoint?: boolean;
+  dependency_count?: number;
+  ownership_score?: number;
+  runtime_classification?: string | null;
+  group?: string | null;
+  x?: number | null;
+  y?: number | null;
+  metadata?: Record<string, unknown>;
 };
 
 export type ArchitectureEdge = {
@@ -39,6 +49,11 @@ export type ArchitectureEdge = {
   target: string;
   label: string;
   confidence: Confidence;
+  weight?: number;
+  kind?: "import" | "asset" | "deployment" | "manifest" | "semantic" | "dependency" | string;
+  reasons?: string[];
+  files?: string[];
+  metadata?: Record<string, unknown>;
 };
 
 export type ArchitectureMap = {
@@ -48,6 +63,8 @@ export type ArchitectureMap = {
   edges: ArchitectureEdge[];
   dependency_flow: string[];
   confidence: Confidence;
+  framework_signals?: string[];
+  graph_metrics?: Record<string, unknown>;
 };
 
 export type OnboardingStep = {

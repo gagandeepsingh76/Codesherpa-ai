@@ -8,6 +8,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from backend.models import FolderInsight, ImportantFile, RepositoryScan
 from backend.utils.ids import stable_repo_id
 
@@ -26,6 +28,7 @@ EXCLUDED_DIRS = {
     "coverage",
     ".turbo",
     ".cache",
+    ".codesherpa",
 }
 
 LANGUAGE_BY_EXTENSION = {
@@ -54,10 +57,11 @@ LANGUAGE_BY_EXTENSION = {
     ".json": "JSON",
 }
 
-MANIFESTS = {
+MANIFEST_NAMES = {
     "package.json",
     "pyproject.toml",
     "requirements.txt",
+    "requirements-dev.txt",
     "go.mod",
     "Cargo.toml",
     "pom.xml",
@@ -69,8 +73,19 @@ MANIFESTS = {
     "next.config.ts",
     "vite.config.ts",
     "vite.config.js",
+    "vite.config.mjs",
     "tailwind.config.ts",
     "tailwind.config.js",
+    "tailwind.config.mjs",
+    "tsconfig.json",
+    "tsconfig.base.json",
+    "vercel.json",
+    "render.yaml",
+    "render.yml",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "nest-cli.json",
+    "schema.prisma",
 }
 
 IMPORTANT_NAMES = {
@@ -88,7 +103,7 @@ IMPORTANT_NAMES = {
 
 
 class RepositoryScanner:
-    def __init__(self, max_files: int = 2500, max_file_bytes: int = 120_000) -> None:
+    def __init__(self, max_files: int = 10_000, max_file_bytes: int = 120_000) -> None:
         self.max_files = max_files
         self.max_file_bytes = max_file_bytes
 
@@ -151,8 +166,12 @@ class RepositoryScanner:
 
     def _read_manifests(self, repo_path: Path, files: list[str]) -> dict[str, Any]:
         manifests: dict[str, Any] = {}
-        file_set = set(files)
-        for file in sorted(file_set & MANIFESTS):
+        manifest_files = [
+            file
+            for file in files
+            if Path(file).name in MANIFEST_NAMES or file in MANIFEST_NAMES
+        ][:120]
+        for file in sorted(manifest_files):
             path = repo_path / file
             try:
                 text = path.read_text(encoding="utf-8", errors="ignore")
@@ -163,27 +182,35 @@ class RepositoryScanner:
 
     @staticmethod
     def _parse_manifest(file: str, text: str) -> Any:
+        name = Path(file).name
         try:
-            if file.endswith(".json"):
-                return json.loads(text)
-            if file.endswith(".toml"):
+            if name.endswith(".json"):
+                return json.loads(RepositoryScanner._strip_json_comments(text))
+            if name.endswith(".toml"):
                 return tomllib.loads(text)
-            if file == "requirements.txt":
+            if name.startswith("requirements") and name.endswith(".txt"):
                 return [line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")]
-            if file == "go.mod":
+            if name in {"render.yaml", "render.yml", "docker-compose.yml", "docker-compose.yaml"}:
+                return yaml.safe_load(text) or {}
+            if name == "go.mod":
                 return {"module": next((line.replace("module", "").strip() for line in text.splitlines() if line.startswith("module ")), None)}
         except Exception:
             return {"raw_preview": text[:2000], "parse_error": True}
         return {"raw_preview": text[:4000]}
 
     @staticmethod
+    def _strip_json_comments(text: str) -> str:
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+        return re.sub(r"(^|\s)//.*$", "", text, flags=re.MULTILINE)
+
+    @staticmethod
     def _detect_frameworks(manifests: dict[str, Any], files: list[str]) -> list[str]:
         detected: set[str] = set()
-        package = manifests.get("package.json", {})
         deps: dict[str, Any] = {}
-        if isinstance(package, dict):
-            for key in ("dependencies", "devDependencies", "peerDependencies"):
-                deps.update(package.get(key, {}) or {})
+        for file, manifest in manifests.items():
+            if Path(file).name == "package.json" and isinstance(manifest, dict):
+                for key in ("dependencies", "devDependencies", "peerDependencies"):
+                    deps.update(manifest.get(key, {}) or {})
 
         dependency_map = {
             "next": "Next.js",
@@ -196,8 +223,11 @@ class RepositoryScanner:
             "fastify": "Fastify",
             "nestjs": "NestJS",
             "@nestjs/core": "NestJS",
+            "@nestjs/common": "NestJS",
+            "vite": "Vite",
             "tailwindcss": "Tailwind CSS",
             "framer-motion": "Framer Motion",
+            "prisma": "Prisma",
             "@prisma/client": "Prisma",
             "drizzle-orm": "Drizzle ORM",
             "vitest": "Vitest",
@@ -208,9 +238,16 @@ class RepositoryScanner:
             if package_name in deps:
                 detected.add(framework)
 
-        requirements = "\n".join(manifests.get("requirements.txt", []))
-        pyproject = manifests.get("pyproject.toml", {})
-        py_text = json.dumps(pyproject).lower() if isinstance(pyproject, dict) else ""
+        requirement_lines: list[str] = []
+        pyproject_payloads: list[dict[str, Any]] = []
+        for file, manifest in manifests.items():
+            name = Path(file).name
+            if name.startswith("requirements") and isinstance(manifest, list):
+                requirement_lines.extend(str(item) for item in manifest)
+            if name == "pyproject.toml" and isinstance(manifest, dict):
+                pyproject_payloads.append(manifest)
+        requirements = "\n".join(requirement_lines)
+        py_text = "\n".join(json.dumps(payload).lower() for payload in pyproject_payloads)
         python_signal = f"{requirements}\n{py_text}".lower()
         python_map = {
             "fastapi": "FastAPI",
@@ -229,15 +266,23 @@ class RepositoryScanner:
                 detected.add(framework)
 
         file_set = set(files)
-        if any(file.startswith("app/") for file in file_set) and "Next.js" in detected:
+        file_names = {Path(file).name for file in files}
+        if any(name.startswith("next.config.") for name in file_names):
+            detected.add("Next.js")
+        if any("/app/" in f"/{file}" or file.startswith("app/") for file in file_set) and "Next.js" in detected:
             detected.add("Next.js App Router")
-        if "vite.config.ts" in file_set or "vite.config.js" in file_set:
+        if any(name.startswith("vite.config.") for name in file_names):
             detected.add("Vite")
-        if "tailwind.config.ts" in file_set or "tailwind.config.js" in file_set:
+        if any(name.startswith("tailwind.config.") for name in file_names):
             detected.add("Tailwind CSS")
-        if "go.mod" in manifests:
+        if "schema.prisma" in file_names:
+            detected.add("Prisma")
+        if "manage.py" in file_names and any("settings.py" in file for file in file_set):
+            detected.add("Django")
+        manifest_names = {Path(file).name for file in manifests}
+        if "go.mod" in manifest_names:
             detected.add("Go")
-        if "Cargo.toml" in manifests:
+        if "Cargo.toml" in manifest_names:
             detected.add("Rust")
 
         return sorted(detected)
@@ -254,8 +299,8 @@ class RepositoryScanner:
             "Cargo.lock": "Cargo",
             "go.sum": "Go modules",
         }
-        file_set = set(files)
-        return [manager for file, manager in signals.items() if file in file_set]
+        file_names = {Path(file).name for file in files}
+        return [manager for file, manager in signals.items() if file in file_names]
 
     @staticmethod
     def _detect_entry_points(files: list[str]) -> list[str]:
@@ -278,6 +323,17 @@ class RepositoryScanner:
         ]
         entry_points = [file for file in candidates if file in file_set]
         entry_points.extend(sorted(file for file in files if re.search(r"(^|/)api/(route|index)\.(ts|tsx|js|py)$", file))[:12])
+        nested_patterns = [
+            r"(^|/)app/(layout|page)\.(tsx|jsx|ts|js)$",
+            r"(^|/)pages/index\.(tsx|jsx|ts|js)$",
+            r"(^|/)src/main\.(tsx|jsx|ts|js)$",
+            r"(^|/)(main|app)\.py$",
+            r"(^|/)manage\.py$",
+            r"(^|/)(server|index)\.(ts|js)$",
+        ]
+        for pattern in nested_patterns:
+            entry_points.extend(sorted(file for file in files if re.search(pattern, file))[:8])
+        entry_points = list(dict.fromkeys(entry_points))
         return entry_points[:20]
 
     @staticmethod
