@@ -14,6 +14,7 @@ from backend.agents.repository_intelligence import RepositoryIntelligenceAgent
 from backend.models import AnalysisResult, ChatResponse, RepositoryScan, TimelineEvent
 from backend.services.git_service import GitService
 from backend.services.gitagent_registry import GitAgentRegistry
+from backend.services.code_intelligence import RepositoryCodeIntelligenceBuilder, RepositorySemanticRetriever
 from backend.services.llm_service import LLMService
 from backend.services.memory_store import MemoryStore
 from backend.services.repository_scanner import RepositoryScanner
@@ -30,6 +31,8 @@ class RepositoryUnderstandingWorkflow:
         self.llm = LLMService(self.registry)
         self.repository_agent = RepositoryAnalysisAgent()
         self.architecture_agent = ArchitectureMappingAgent()
+        self.code_intelligence = RepositoryCodeIntelligenceBuilder()
+        self.retriever = RepositorySemanticRetriever()
         self.onboarding_agent = OnboardingAgent()
         self.issue_agent = IssueDebuggingAgent()
         self.documentation_agent = DocumentationAgent()
@@ -49,16 +52,23 @@ class RepositoryUnderstandingWorkflow:
 
         if use_cache:
             cached = self.memory.get_analysis_by_url(repo_url)
-            if cached and cached.get("intelligence"):
+            if cached and cached.get("intelligence") and cached.get("code_intelligence", {}).get("semantic_memory"):
                 await timeline.add(
                     "GitAgent Memory",
                     "Cached repository intelligence restored",
-                    "Reused persisted architecture, contributor, risk, and good-first-issue memory for a fast repeat demo.",
+                    "Reused persisted architecture, contributor, risk, symbol, route, and semantic memory for a fast repeat analysis.",
                     confidence="high",
                 )
                 result = AnalysisResult.model_validate(cached)
                 result.timeline = timeline.events + result.timeline
                 return result
+            if cached:
+                await timeline.add(
+                    "GitAgent Memory",
+                    "Cached memory requires symbol re-indexing",
+                    "Existing memory predates semantic symbol intelligence, so CodeSherpa is rebuilding grounded repository memory.",
+                    confidence="medium",
+                )
 
         await timeline.add(
             self.repository_agent.name,
@@ -121,6 +131,25 @@ class RepositoryUnderstandingWorkflow:
             "Detecting system boundaries",
             "Classified frontend, backend, shared, tests, docs, and infrastructure areas.",
             confidence=architecture.confidence,
+        )
+
+        await timeline.add(
+            "Symbol Intelligence Engine",
+            "Extracting code symbols and runtime intelligence",
+            "Parsing Python AST plus TypeScript/JavaScript symbols, routes, middleware, auth, state, environment, and runtime boundaries.",
+            status="running",
+            confidence="high",
+        )
+        code_intelligence = await asyncio.to_thread(self.code_intelligence.analyze, scan, architecture)
+        await timeline.add(
+            "Symbol Intelligence Engine",
+            "Semantic repository memory built",
+            (
+                f"Indexed {len(code_intelligence.symbols)} symbols, {len(code_intelligence.routes)} routes, "
+                f"and {len(code_intelligence.semantic_memory)} grounded memory items."
+            ),
+            confidence=code_intelligence.confidence,
+            metadata=code_intelligence.retrieval_stats,
         )
 
         await timeline.add(
@@ -187,6 +216,7 @@ class RepositoryUnderstandingWorkflow:
             architecture=architecture,
             contributor_plan=contributor_plan,
             intelligence=intelligence,
+            code_intelligence=code_intelligence,
             timeline=timeline.events,
             agent_manifest=self._manifest_public_payload(),
         )
@@ -211,14 +241,41 @@ class RepositoryUnderstandingWorkflow:
                 confidence="low",
             )
 
-        llm_answer = await self.llm.answer_with_context(message, self._compact_context(analysis))
-        if llm_answer:
-            cited = self._extract_citations(llm_answer, analysis)
-            response = ChatResponse(repo_id=repo_id, answer=llm_answer, cited_files=cited, confidence="high")
+        if not analysis.get("code_intelligence", {}).get("semantic_memory"):
+            response = ChatResponse(
+                repo_id=repo_id,
+                answer=(
+                    "This repository memory was created before symbol intelligence was available. "
+                    "Re-run analysis so I can answer from exact files, symbols, routes, middleware, providers, and runtime relationships."
+                ),
+                cited_files=[],
+                confidence="low",
+            )
             self.memory.remember_question(repo_id, message, response)
             return response
 
-        response = self._heuristic_chat(repo_id, message, analysis)
+        retrieval_context = self.retriever.build_context(message, analysis)
+        llm_answer = await self.llm.answer_with_context(message, retrieval_context)
+        if llm_answer:
+            cited = self._extract_citations(llm_answer, analysis)
+            cited_symbols = self._extract_symbol_citations(llm_answer, analysis)
+            cited_routes = self._extract_route_citations(llm_answer, analysis)
+            response = ChatResponse(
+                repo_id=repo_id,
+                answer=llm_answer,
+                cited_files=cited,
+                cited_symbols=cited_symbols,
+                cited_routes=cited_routes,
+                context_items=[
+                    item
+                    for item in retrieval_context.get("retrieved_items", [])[:6]
+                ],
+                confidence="high",
+            )
+            self.memory.remember_question(repo_id, message, response)
+            return response
+
+        response = self.retriever.answer(repo_id, message, analysis)
         self.memory.remember_question(repo_id, message, response)
         return response
 
@@ -239,6 +296,10 @@ class RepositoryUnderstandingWorkflow:
     def intelligence(self, repo_id: str) -> dict[str, Any] | None:
         analysis = self.memory.get_analysis(repo_id)
         return analysis.get("intelligence") if analysis else None
+
+    def code_intelligence_payload(self, repo_id: str) -> dict[str, Any] | None:
+        analysis = self.memory.get_analysis(repo_id)
+        return analysis.get("code_intelligence") if analysis else None
 
     def repo_summary(self, repo_id: str) -> dict[str, Any] | None:
         analysis = self.memory.get_analysis(repo_id)
@@ -274,6 +335,13 @@ class RepositoryUnderstandingWorkflow:
                 "summary": architecture.get("summary"),
                 "boundaries": architecture.get("boundaries"),
                 "dependency_flow": architecture.get("dependency_flow"),
+                "graph_metrics": architecture.get("graph_metrics"),
+            },
+            "code_intelligence": {
+                "routes": analysis.get("code_intelligence", {}).get("routes", [])[:40],
+                "auth": analysis.get("code_intelligence", {}).get("auth", {}),
+                "state": analysis.get("code_intelligence", {}).get("state", {}),
+                "runtime": analysis.get("code_intelligence", {}).get("runtime", {}),
             },
             "contributor_plan": contributor,
             "intelligence": analysis.get("intelligence", {}),
@@ -409,7 +477,47 @@ class RepositoryUnderstandingWorkflow:
             if isinstance(item, dict)
         }
         known_files.update(analysis.get("summary", {}).get("entry_points", []))
+        known_files.update(
+            symbol.get("file")
+            for symbol in analysis.get("code_intelligence", {}).get("symbols", [])
+            if isinstance(symbol, dict)
+        )
+        known_files.update(
+            route.get("file")
+            for route in analysis.get("code_intelligence", {}).get("routes", [])
+            if isinstance(route, dict)
+        )
+        known_files.update(
+            item.get("file")
+            for item in analysis.get("code_intelligence", {}).get("semantic_memory", [])
+            if isinstance(item, dict)
+        )
         return [path for path in known_files if path and path in answer][:8]
+
+    @staticmethod
+    def _extract_symbol_citations(answer: str, analysis: dict[str, Any]) -> list[str]:
+        symbols = analysis.get("code_intelligence", {}).get("symbols", [])
+        cited = []
+        for symbol in symbols:
+            if not isinstance(symbol, dict):
+                continue
+            name = symbol.get("name")
+            symbol_id = symbol.get("id")
+            if name and symbol_id and name in answer:
+                cited.append(symbol_id)
+        return list(dict.fromkeys(cited))[:12]
+
+    @staticmethod
+    def _extract_route_citations(answer: str, analysis: dict[str, Any]) -> list[str]:
+        routes = analysis.get("code_intelligence", {}).get("routes", [])
+        cited = []
+        for route in routes:
+            if not isinstance(route, dict):
+                continue
+            label = f"{route.get('method')} {route.get('path')}"
+            if route.get("method") and route.get("path") and label in answer:
+                cited.append(label)
+        return list(dict.fromkeys(cited))[:12]
 
 
 def sse(event: str, payload: dict[str, Any]) -> str:

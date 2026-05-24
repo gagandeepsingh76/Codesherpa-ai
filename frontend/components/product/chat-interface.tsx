@@ -8,22 +8,26 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { loadAnalysis, sendChat } from "@/lib/api";
-import type { AnalysisResult, ChatResponse } from "@/lib/types";
+import type { AnalysisResult, ChatResponse, SemanticMemoryItem } from "@/lib/types";
 
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
   citations?: string[];
+  symbols?: string[];
+  routes?: string[];
+  contextItems?: SemanticMemoryItem[];
   confidence?: string;
 };
 
 const prompts = [
   "How authentication works?",
+  "Where are protected routes?",
   "Where are API routes?",
   "Explain state management",
-  "Suggest good first issues",
-  "What is the complexity and risk profile?",
-  "How should a beginner start?",
+  "Explain runtime architecture",
+  "What are critical dependencies?",
+  "What happens during login?",
 ];
 
 export function ChatInterface() {
@@ -39,8 +43,11 @@ export function ChatInterface() {
     setMessages([
       {
         role: "assistant",
-        content: `Repository memory is loaded for ${loaded.summary.name}. Ask about architecture, APIs, onboarding, dependencies, or contribution paths.`,
+        content: `Repository intelligence is loaded for ${loaded.summary.name}: ${loaded.code_intelligence.symbols.length} symbols, ${loaded.code_intelligence.routes.length} routes, and ${loaded.code_intelligence.semantic_memory.length} grounded memory items.`,
         citations: loaded.summary.entry_points.slice(0, 3),
+        symbols: loaded.code_intelligence.symbols.slice(0, 3).map((symbol) => symbol.id),
+        routes: loaded.code_intelligence.routes.slice(0, 3).map((route) => `${route.method} ${route.path}`),
+        contextItems: loaded.code_intelligence.semantic_memory.slice(0, 2),
         confidence: "high",
       },
     ]);
@@ -63,6 +70,9 @@ export function ChatInterface() {
           role: "assistant",
           content: response.answer,
           citations: response.cited_files,
+          symbols: response.cited_symbols,
+          routes: response.cited_routes,
+          contextItems: response.context_items,
           confidence: response.confidence,
         },
       ]);
@@ -109,13 +119,36 @@ export function ChatInterface() {
               ) : null}
               <div className={`max-w-[780px] rounded-lg border p-4 ${message.role === "user" ? "border-amber-300/20 bg-amber-300/10" : "border-white/10 bg-black/[0.26]"}`}>
                 <div className="whitespace-pre-wrap text-sm leading-7 text-white/[0.72]">{message.content}</div>
-                {message.citations?.length ? (
+                {message.citations?.length || message.routes?.length || message.symbols?.length ? (
                   <div className="mt-4 flex flex-wrap gap-2">
-                    {message.citations.map((file, fileIndex) => (
+                    {message.citations?.map((file, fileIndex) => (
                       <Badge key={`${file}-${fileIndex}`} variant="neutral" className="gap-1">
                         <FileCode2 className="h-3 w-3" />
                         {file}
                       </Badge>
+                    ))}
+                    {message.routes?.map((route, routeIndex) => (
+                      <Badge key={`${route}-${routeIndex}`} variant="amber" className="gap-1">
+                        {route}
+                      </Badge>
+                    ))}
+                    {message.symbols?.slice(0, 8).map((symbol, symbolIndex) => (
+                      <Badge key={`${symbol}-${symbolIndex}`} variant="neutral" className="gap-1">
+                        {symbol.split("::").at(-1) ?? symbol}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
+                {message.contextItems?.length ? (
+                  <div className="mt-4 grid gap-2">
+                    {message.contextItems.slice(0, 3).map((item) => (
+                      <div key={item.id} className="rounded-md border border-white/[0.08] bg-white/[0.035] px-3 py-2">
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-white/[0.74]">
+                          <span className="font-medium text-white">{item.title}</span>
+                          <span className="text-white/[0.36]">{item.type}</span>
+                          {item.file ? <span className="font-mono text-white/[0.48]">{item.file}</span> : null}
+                        </div>
+                      </div>
                     ))}
                   </div>
                 ) : null}

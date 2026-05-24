@@ -57,6 +57,19 @@ function normalizeAnalysis(candidate: Partial<AnalysisResult>): AnalysisResult {
         contributorPlan.contribution_paths ??
         demoAnalysis.intelligence.contribution_paths,
     },
+    code_intelligence: {
+      ...demoAnalysis.code_intelligence,
+      ...candidate.code_intelligence,
+      auth: { ...demoAnalysis.code_intelligence.auth, ...candidate.code_intelligence?.auth },
+      state: { ...demoAnalysis.code_intelligence.state, ...candidate.code_intelligence?.state },
+      runtime: { ...demoAnalysis.code_intelligence.runtime, ...candidate.code_intelligence?.runtime },
+      deployment: { ...demoAnalysis.code_intelligence.deployment, ...candidate.code_intelligence?.deployment },
+      symbols: candidate.code_intelligence?.symbols ?? demoAnalysis.code_intelligence.symbols,
+      routes: candidate.code_intelligence?.routes ?? demoAnalysis.code_intelligence.routes,
+      semantic_memory: candidate.code_intelligence?.semantic_memory ?? demoAnalysis.code_intelligence.semantic_memory,
+      symbol_graph: candidate.code_intelligence?.symbol_graph ?? demoAnalysis.code_intelligence.symbol_graph,
+      retrieval_stats: candidate.code_intelligence?.retrieval_stats ?? demoAnalysis.code_intelligence.retrieval_stats,
+    },
     timeline: candidate.timeline ?? demoAnalysis.timeline,
     agent_manifest: { ...demoAnalysis.agent_manifest, ...candidate.agent_manifest },
   };
@@ -159,6 +172,9 @@ export async function sendChat(repoId: string, message: string): Promise<ChatRes
         .map((file) => `\`${file}\``)
         .join(", ")}.`,
       cited_files: analysis.summary.entry_points.slice(0, 4),
+      cited_symbols: analysis.code_intelligence.symbols.slice(0, 4).map((symbol) => symbol.id),
+      cited_routes: analysis.code_intelligence.routes.slice(0, 4).map((route) => `${route.method} ${route.path}`),
+      context_items: analysis.code_intelligence.semantic_memory.slice(0, 4),
       confidence: "medium",
       remembered: false,
     };

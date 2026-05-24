@@ -109,6 +109,81 @@ class DependencyGraphIntegrationTests(unittest.TestCase):
         edge = next(edge for edge in architecture.edges if edge.source == "frontend" and edge.target == "backend")
         self.assertGreaterEqual(edge.weight, 1)
         self.assertTrue(edge.reasons)
+        self.assertTrue(edge.metadata.get("import_traces"))
+
+    def test_risk_engine_detects_cycles_and_hotspots(self) -> None:
+        architecture = self.analyze(
+            {
+                "package.json": '{"dependencies":{"react":"19.0.0","vite":"5.0.0"}}',
+                "src/a.ts": 'import "./b"; export const a = 1;',
+                "src/b.ts": 'import "./a"; export const b = 1;',
+                "src/main.tsx": 'import "./a"; import "./b";',
+            }
+        )
+
+        self.assertGreaterEqual(architecture.risk_analysis["cycle_count"], 1)
+        warning_types = {warning["type"] for warning in architecture.risk_analysis["warnings"]}
+        self.assertIn("circular_dependency", warning_types)
+        self.assertTrue(architecture.hotspots)
+
+    def test_file_graph_expansion_exposes_internal_children(self) -> None:
+        architecture = self.analyze(
+            {
+                "requirements.txt": "fastapi==0.110.3\n",
+                "backend/main.py": "from backend.api.routes import router\n",
+                "backend/api/routes.py": "from backend.services.users import service\n",
+                "backend/services/users.py": "service = object()\n",
+            }
+        )
+
+        expansion = architecture.file_graph["expansions"]["backend"]
+        child_ids = {node["id"] for node in expansion["nodes"]}
+        self.assertIn("backend/api", child_ids)
+        self.assertIn("backend/services", child_ids)
+
+    def test_monorepo_topology_detects_workspaces(self) -> None:
+        architecture = self.analyze(
+            {
+                "package.json": '{"workspaces":["apps/*","packages/*"],"dependencies":{"react":"19.0.0"}}',
+                "apps/web/package.json": '{"name":"web"}',
+                "apps/web/src/main.tsx": 'import { util } from "../../packages/ui";',
+                "packages/ui/package.json": '{"name":"@repo/ui"}',
+                "packages/ui/index.ts": "export const util = 1;",
+            }
+        )
+
+        self.assertTrue(architecture.topology["monorepo"])
+        workspace_ids = {workspace["id"] for workspace in architecture.topology["workspaces"]}
+        self.assertIn("apps/web", workspace_ids)
+        self.assertIn("packages/ui", workspace_ids)
+
+    def test_large_repo_scan_caps_output_but_keeps_metrics(self) -> None:
+        files = {
+            "package.json": '{"dependencies":{"react":"19.0.0","vite":"5.0.0"}}',
+            "src/main.tsx": 'import "./feature-0";',
+        }
+        for index in range(260):
+            files[f"src/feature-{index}.ts"] = f"export const feature{index} = {index};\n"
+        architecture = self.analyze(files)
+
+        self.assertLessEqual(len(architecture.nodes), 36)
+        self.assertLessEqual(len(architecture.edges), 80)
+        self.assertGreaterEqual(architecture.graph_metrics["source_files_analyzed"], 200)
+
+    def test_same_backend_boundary_imports_promote_weighted_internal_relationships(self) -> None:
+        architecture = self.analyze(
+            {
+                "package.json": '{"dependencies":{"express":"4.18.0"}}',
+                "backend/routes/v1/issues.js": 'const issueController = require("../../controllers/issueController"); router.post("/issues", issueController.createIssue);',
+                "backend/controllers/issueController.js": 'const issueService = require("../services/issueService"); exports.createIssue = function createIssue(){ return issueService.createIssue(); };',
+                "backend/services/issueService.js": "exports.createIssue = function createIssue(){ return {}; };",
+            }
+        )
+
+        self.assertGreaterEqual(architecture.graph_metrics["imports_resolved"], 2)
+        self.assertGreaterEqual(architecture.graph_metrics["internal_import_edges"], 2)
+        self.assertTrue(self.edge_exists(architecture, "backend/routes", "backend/controllers", "import"))
+        self.assertTrue(self.edge_exists(architecture, "backend/controllers", "backend/services", "import"))
 
 
 if __name__ == "__main__":

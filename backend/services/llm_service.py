@@ -21,11 +21,13 @@ class LLMService:
 
         prompt = (
             f"{self.registry.system_context()}\n\n"
-            "# Repository Context\n"
+            "# Grounded Repository Context\n"
             f"{context}\n\n"
             "# User Question\n"
             f"{question}\n\n"
-            "Answer with concise repository-specific guidance. Cite file paths that appear in the context."
+            "Answer with concise repository-specific guidance. Use only the provided retrieved files, symbols, routes, "
+            "middleware, providers, runtime boundaries, and dependency evidence. Cite exact file paths and symbol or "
+            "route names that appear in the context. If the evidence is missing, say what could not be proven."
         )
         response = await self.client.responses.create(
             model=self.model,

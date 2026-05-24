@@ -65,6 +65,11 @@ export type ArchitectureMap = {
   confidence: Confidence;
   framework_signals?: string[];
   graph_metrics?: Record<string, unknown>;
+  file_graph?: Record<string, unknown>;
+  risk_analysis?: Record<string, unknown>;
+  hotspots?: Array<Record<string, unknown>>;
+  topology?: Record<string, unknown>;
+  evolution?: Record<string, unknown>;
 };
 
 export type OnboardingStep = {
@@ -153,6 +158,91 @@ export type RepositoryIntelligence = {
   confidence: Confidence;
 };
 
+export type CodeSymbol = {
+  id: string;
+  name: string;
+  type: string;
+  file: string;
+  line?: number | null;
+  end_line?: number | null;
+  language: string;
+  runtime_role?: string | null;
+  signature?: string | null;
+  imports: string[];
+  used_by: string[];
+  calls: string[];
+  decorators: string[];
+  metadata?: Record<string, unknown>;
+};
+
+export type RouteEndpoint = {
+  id: string;
+  method: string;
+  path: string;
+  file: string;
+  line?: number | null;
+  framework: string;
+  controller?: string | null;
+  middleware: string[];
+  auth_required: boolean;
+  dependencies: string[];
+  symbols: string[];
+  metadata?: Record<string, unknown>;
+};
+
+export type AuthFlow = {
+  strategies: string[];
+  files: string[];
+  login_routes: RouteEndpoint[];
+  token_issuers: string[];
+  validators: string[];
+  protected_routes: RouteEndpoint[];
+  role_enforcement: string[];
+  session_persistence: string[];
+  explanation: string;
+  confidence: Confidence;
+};
+
+export type StateFlow = {
+  libraries: string[];
+  stores: CodeSymbol[];
+  providers: CodeSymbol[];
+  hooks: CodeSymbol[];
+  cache_layers: CodeSymbol[];
+  shared_state_boundaries: string[];
+  relationships: Array<Record<string, unknown>>;
+  explanation: string;
+  confidence: Confidence;
+};
+
+export type SemanticMemoryItem = {
+  id: string;
+  type: string;
+  title: string;
+  file?: string | null;
+  line?: number | null;
+  symbol?: string | null;
+  route?: string | null;
+  summary: string;
+  keywords: string[];
+  importance: number;
+  relations: string[];
+  metadata?: Record<string, unknown>;
+};
+
+export type RepositoryCodeIntelligence = {
+  symbols: CodeSymbol[];
+  symbol_graph: Record<string, unknown>;
+  routes: RouteEndpoint[];
+  auth: AuthFlow;
+  state: StateFlow;
+  runtime: Record<string, unknown>;
+  deployment: Record<string, unknown>;
+  semantic_memory: SemanticMemoryItem[];
+  retrieval_stats: Record<string, unknown>;
+  confidence: Confidence;
+};
+
 export type RepositorySummary = {
   repo_id: string;
   repo_url: string;
@@ -177,6 +267,7 @@ export type AnalysisResult = {
   architecture: ArchitectureMap;
   contributor_plan: ContributorPlan;
   intelligence: RepositoryIntelligence;
+  code_intelligence: RepositoryCodeIntelligence;
   timeline: TimelineEvent[];
   agent_manifest: {
     name: string;
@@ -192,6 +283,9 @@ export type ChatResponse = {
   repo_id: string;
   answer: string;
   cited_files: string[];
+  cited_symbols: string[];
+  cited_routes: string[];
+  context_items: SemanticMemoryItem[];
   confidence: Confidence;
   remembered: boolean;
 };

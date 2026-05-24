@@ -138,6 +138,7 @@ class RepositoryDependencyGraph:
 
         node_ids = self._initial_node_ids(scan)
         edges: dict[tuple[str, str, str], EdgeEvidence] = {}
+        file_dependencies: list[dict[str, Any]] = []
         metrics = {
             "source_files_analyzed": len(source_files),
             "imports_detected": 0,
@@ -145,6 +146,8 @@ class RepositoryDependencyGraph:
             "asset_references": 0,
             "external_imports": 0,
             "semantic_edges": 0,
+            "internal_import_edges": 0,
+            "internal_import_traces": 0,
         }
 
         for file, parsed_file in parsed.items():
@@ -161,6 +164,17 @@ class RepositoryDependencyGraph:
                         label = self._edge_label(source_node, target_node, import_spec.kind)
                         reason = f"{file} {import_spec.kind} `{import_spec.specifier}`"
                         self._add_edge(edges, source_node, target_node, label, "import", 1.0, reason, file, "high")
+                    file_dependencies.append(
+                        {
+                            "source_file": file,
+                            "target_file": target,
+                            "source_node": source_node,
+                            "target_node": target_node,
+                            "specifier": import_spec.specifier,
+                            "kind": import_spec.kind,
+                            "statement": f"{import_spec.kind} `{import_spec.specifier}`",
+                        }
+                    )
                 else:
                     metrics["external_imports"] += 1
 
@@ -173,11 +187,25 @@ class RepositoryDependencyGraph:
                 reason = f"{file} references static asset `{asset_ref}`"
                 if asset_node != source_node:
                     self._add_edge(edges, asset_node, source_node, "assets for", "asset", 1.0, reason, file, "high")
+                    file_dependencies.append(
+                        {
+                            "source_file": asset_ref,
+                            "target_file": file,
+                            "source_node": asset_node,
+                            "target_node": source_node,
+                            "specifier": asset_ref,
+                            "kind": "asset",
+                            "statement": f"asset reference `{asset_ref}`",
+                        }
+                    )
 
+        internal_edges, internal_traces = self._add_internal_import_edges(scan, node_ids, edges, file_dependencies)
+        metrics["internal_import_edges"] = internal_edges
+        metrics["internal_import_traces"] = internal_traces
         metrics["semantic_edges"] += self._add_semantic_edges(scan, node_ids, edges, parsed)
         nodes = self._build_nodes(scan, node_ids, edges, parsed)
         self._stabilize_layout(nodes, edges)
-        edge_models = self._edge_models(edges, {node.id for node in nodes})
+        edge_models = self._edge_models(edges, {node.id for node in nodes}, file_dependencies)
         connected_ratio = self._connected_ratio(nodes, edge_models)
         metrics.update(
             {
@@ -190,6 +218,11 @@ class RepositoryDependencyGraph:
 
         framework_signals = self._framework_signals(scan)
         confidence = self._confidence(scan, metrics, framework_signals)
+        file_graph = self._file_graph(scan, nodes, file_dependencies)
+        risk_analysis = self._risk_analysis(scan, nodes, edge_models, file_dependencies)
+        hotspots = self._hotspots(nodes, edge_models, risk_analysis)
+        topology = self._topology(scan, nodes, edge_models, file_dependencies)
+        evolution = self._evolution(scan)
         return ArchitectureMap(
             summary=self._summary(scan, nodes, edge_models, metrics),
             boundaries=self._boundaries(scan, nodes, edge_models),
@@ -199,6 +232,11 @@ class RepositoryDependencyGraph:
             confidence=confidence,
             framework_signals=framework_signals,
             graph_metrics=metrics,
+            file_graph=file_graph,
+            risk_analysis=risk_analysis,
+            hotspots=hotspots,
+            topology=topology,
+            evolution=evolution,
         )
 
     def _parse_files(self, repo_path: Path, files: list[str]) -> dict[str, ParsedFile]:
@@ -758,6 +796,78 @@ class RepositoryDependencyGraph:
                 node_ids.add(node)
         return added
 
+    def _add_internal_import_edges(
+        self,
+        scan: RepositoryScan,
+        node_ids: set[str],
+        edges: dict[tuple[str, str, str], EdgeEvidence],
+        file_dependencies: list[dict[str, Any]],
+    ) -> tuple[int, int]:
+        grouped: dict[tuple[str, str], dict[str, Any]] = {}
+        trace_count = 0
+        for dependency in file_dependencies:
+            if dependency.get("kind") == "asset":
+                continue
+            if dependency.get("source_node") != dependency.get("target_node"):
+                continue
+            source_file = str(dependency.get("source_file", ""))
+            target_file = str(dependency.get("target_file", ""))
+            parent = str(dependency.get("source_node", ""))
+            source_child = self._promoted_internal_node(parent, source_file, scan)
+            target_child = self._promoted_internal_node(parent, target_file, scan)
+            if not source_child or not target_child or source_child == target_child:
+                continue
+            trace_count += 1
+            key = (source_child, target_child)
+            edge = grouped.setdefault(key, {"weight": 0.0, "reasons": [], "files": [], "parent": parent})
+            edge["weight"] += 1.0
+            statement = str(dependency.get("statement") or dependency.get("specifier") or "internal import")
+            if statement not in edge["reasons"]:
+                edge["reasons"].append(statement)
+            if source_file and source_file not in edge["files"]:
+                edge["files"].append(source_file)
+
+        added = 0
+        for (source_child, target_child), payload in sorted(grouped.items(), key=lambda item: (-item[1]["weight"], item[0]))[:96]:
+            node_ids.add(source_child)
+            node_ids.add(target_child)
+            reason = f"Internal import relationship inside {payload['parent']}: " + "; ".join(payload["reasons"][:3])
+            self._add_edge(
+                edges,
+                source_child,
+                target_child,
+                "imports internal",
+                "import",
+                float(payload["weight"]),
+                reason,
+                payload["files"][0] if payload["files"] else None,
+                "high",
+            )
+            added += 1
+        return added, trace_count
+
+    @staticmethod
+    def _promoted_internal_node(parent: str, file: str, scan: RepositoryScan) -> str | None:
+        if not file or not parent or parent in {"manifest", "deployment"}:
+            return None
+        path = PurePosixPath(file)
+        parts = path.parts
+        if not parts:
+            return None
+        parent_parts = PurePosixPath(parent).parts
+        if parent == "root":
+            return f"root/{path.name}"
+        if parent == "runtime":
+            return f"runtime/{path.name}"
+        if not file.startswith(f"{parent}/") and RepositoryDependencyGraph._node_id_for_file(file, scan) != parent:
+            return None
+        relative_parts = parts[len(parent_parts):] if file.startswith(f"{parent}/") else parts
+        if not relative_parts:
+            return None
+        if len(relative_parts) >= 2:
+            return f"{parent}/{relative_parts[0]}"
+        return f"{parent}/{relative_parts[0]}"
+
     @staticmethod
     def _manifest_reason(scan: RepositoryScan, node: str) -> str:
         frameworks = ", ".join(scan.frameworks[:4]) if scan.frameworks else "runtime dependencies"
@@ -831,7 +941,7 @@ class RepositoryDependencyGraph:
             node_type, role, description, confidence = self._classify_node(node_id, scan)
             framework = self._node_framework(node_id, scan)
             dependency_count = int(dependency_counts[node_id] + incoming_counts[node_id])
-            file_count = folder_counts[node_id]
+            file_count = folder_counts[node_id] or len(self._files_for_node(node_id, scan))
             ownership_score = min(1.0, (file_count / max(1, len(scan.files))) + (dependency_count / max(4, len(edges))))
             runtime_classification = self._runtime_classification(node_id, node_type, scan)
             signals = self._node_signals(node_id, scan, parsed)
@@ -864,6 +974,7 @@ class RepositoryDependencyGraph:
     @staticmethod
     def _classify_node(node_id: str, scan: RepositoryScan) -> tuple[str, str, str, Confidence]:
         normalized = node_id.lower()
+        root = normalized.split("/", 1)[0]
         folder = next((folder for folder in scan.folders if folder.path == node_id), None)
         if node_id == "manifest":
             return "config", "dependency manifest", "Dependency, framework, and runtime configuration.", "high"
@@ -877,10 +988,24 @@ class RepositoryDependencyGraph:
             return "frontend", "frontend runtime", "Application routes, pages, or UI components.", "high" if "Next.js" in scan.frameworks or "React" in scan.frameworks else "medium"
         if normalized in {"api", "server", "backend"}:
             return "backend", "backend runtime", "API, service, or request handling boundary.", "high" if any(fw in scan.frameworks for fw in {"FastAPI", "Express", "NestJS", "Django"}) else "medium"
+        if root in {"api", "server", "backend"}:
+            if any(part in normalized for part in ("model", "schema", "prisma", "database", "db")):
+                return "data", "data layer", "Models, schemas, or persistence-related implementation.", "medium"
+            if any(part in normalized for part in ("route", "controller", "middleware")):
+                return "backend", "api module", "Request routing, controllers, or middleware inside the backend boundary.", "high"
+            if "service" in normalized:
+                return "backend", "service module", "Backend service logic inside the server runtime boundary.", "medium"
+            return "backend", "backend module", "Nested backend implementation area promoted from import relationships.", "medium"
         if normalized == "src" and any(framework in scan.frameworks for framework in {"React", "Vite", "Next.js"}):
             return "frontend", "frontend runtime", "Application source tree for the detected frontend framework.", "high"
+        if root in {"app", "pages", "components", "frontend", "client", "web"}:
+            return "frontend", "frontend module", "Nested frontend route, component, or UI runtime area.", "medium"
+        if root == "src" and any(framework in scan.frameworks for framework in {"React", "Vite", "Next.js"}):
+            return "frontend", "frontend module", "Nested frontend implementation area promoted from import relationships.", "medium"
         if normalized in {"src", "lib", "packages", "shared", "common", "utils"}:
             return "shared", "shared library", "Reusable implementation or package internals.", "medium"
+        if root in {"lib", "packages", "shared", "common", "utils"}:
+            return "shared", "shared module", "Nested reusable implementation area promoted from import relationships.", "medium"
         if folder:
             node_type = folder.role if folder.role in {"frontend", "backend", "shared", "data", "infra", "docs", "tests"} else "package"
             return node_type, folder.role, folder.description, folder.confidence
@@ -955,7 +1080,12 @@ class RepositoryDependencyGraph:
             signals.extend(sorted(scan.manifests)[:5])
         return list(dict.fromkeys(signals))
 
-    def _edge_models(self, edges: dict[tuple[str, str, str], EdgeEvidence], node_ids: set[str]) -> list[ArchitectureEdge]:
+    def _edge_models(
+        self,
+        edges: dict[tuple[str, str, str], EdgeEvidence],
+        node_ids: set[str],
+        file_dependencies: list[dict[str, Any]],
+    ) -> list[ArchitectureEdge]:
         models: list[ArchitectureEdge] = []
         for edge in sorted(edges.values(), key=lambda item: (-item.weight, item.source, item.target)):
             if edge.source not in node_ids or edge.target not in node_ids:
@@ -963,6 +1093,17 @@ class RepositoryDependencyGraph:
             label = edge.label
             if edge.kind == "import" and edge.weight >= 2:
                 label = f"{edge.label} ({int(edge.weight)})"
+            traces = [
+                {
+                    "source_file": item["source_file"],
+                    "target_file": item["target_file"],
+                    "statement": item["statement"],
+                    "specifier": item["specifier"],
+                    "kind": item["kind"],
+                }
+                for item in file_dependencies
+                if item.get("source_node") == edge.source and item.get("target_node") == edge.target
+            ][:12]
             models.append(
                 ArchitectureEdge(
                     source=edge.source,
@@ -973,10 +1114,553 @@ class RepositoryDependencyGraph:
                     kind=edge.kind,
                     reasons=edge.reasons[:6],
                     files=edge.files[:8],
-                    metadata={"reason_count": len(edge.reasons)},
+                    metadata={
+                        "reason_count": len(edge.reasons),
+                        "import_traces": traces,
+                        "runtime_classification": self._edge_runtime_classification(edge),
+                    },
                 )
             )
         return models[:80]
+
+    @staticmethod
+    def _edge_runtime_classification(edge: EdgeEvidence) -> str:
+        if edge.kind == "deployment":
+            return "deployment/runtime"
+        if edge.kind == "asset":
+            return "static asset flow"
+        if edge.kind == "manifest":
+            return "configuration dependency"
+        if edge.kind == "import":
+            return "code import dependency"
+        return "semantic architecture inference"
+
+    def _file_graph(
+        self,
+        scan: RepositoryScan,
+        nodes: list[ArchitectureNode],
+        file_dependencies: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        node_ids = {node.id for node in nodes}
+        expansions: dict[str, dict[str, Any]] = {}
+        for node in nodes:
+            files = self._files_for_node(node.id, scan)[:240]
+            children = self._child_nodes_for_expansion(node.id, files, scan)
+            child_ids = {child["id"] for child in children}
+            child_edges: dict[tuple[str, str], dict[str, Any]] = {}
+            for dependency in file_dependencies:
+                if dependency.get("source_node") != node.id or dependency.get("target_node") != node.id:
+                    continue
+                source_child = self._child_id_for_file(node.id, str(dependency.get("source_file", "")), scan)
+                target_child = self._child_id_for_file(node.id, str(dependency.get("target_file", "")), scan)
+                if not source_child or not target_child or source_child == target_child:
+                    continue
+                if source_child not in child_ids or target_child not in child_ids:
+                    continue
+                key = (source_child, target_child)
+                edge = child_edges.setdefault(
+                    key,
+                    {
+                        "source": source_child,
+                        "target": target_child,
+                        "weight": 0,
+                        "kind": dependency.get("kind", "import"),
+                        "reasons": [],
+                        "files": [],
+                    },
+                )
+                edge["weight"] += 1
+                statement = dependency.get("statement")
+                if statement and statement not in edge["reasons"]:
+                    edge["reasons"].append(statement)
+                source_file = dependency.get("source_file")
+                if source_file and source_file not in edge["files"]:
+                    edge["files"].append(source_file)
+
+            expansions[node.id] = {
+                "parent": node.id,
+                "label": node.label,
+                "lazy": len(files) > len(children),
+                "total_files": len(self._files_for_node(node.id, scan)),
+                "nodes": children[:64],
+                "edges": list(child_edges.values())[:96],
+                "explanation": self._node_explanation(node, scan),
+            }
+
+        return {
+            "version": 2,
+            "mode": "lazy-expansion",
+            "max_initial_nodes": 64,
+            "expandable_nodes": [node.id for node in nodes if node.id in node_ids],
+            "expansions": expansions,
+        }
+
+    def _files_for_node(self, node_id: str, scan: RepositoryScan) -> list[str]:
+        if node_id == "manifest":
+            return sorted(scan.manifests)
+        if node_id == "deployment":
+            return sorted(
+                file
+                for file in scan.files
+                if PurePosixPath(file).parts[:1] in [(source, ) for source in DEPLOYMENT_FILES]
+                or PurePosixPath(file).name in DEPLOYMENT_FILES
+                or file.startswith(".github/")
+                or file.startswith("workflows/")
+            )
+        if node_id == "root":
+            return sorted(file for file in scan.files if "/" not in file)
+        return sorted(file for file in scan.files if file == node_id or file.startswith(f"{node_id}/") or self._node_id_for_file(file, scan) == node_id)
+
+    def _child_nodes_for_expansion(self, node_id: str, files: list[str], scan: RepositoryScan) -> list[dict[str, Any]]:
+        counts: Counter[str] = Counter()
+        samples: defaultdict[str, list[str]] = defaultdict(list)
+        for file in files:
+            child_id = self._child_id_for_file(node_id, file, scan)
+            if not child_id:
+                continue
+            counts[child_id] += 1
+            if len(samples[child_id]) < 5:
+                samples[child_id].append(file)
+
+        children: list[dict[str, Any]] = []
+        for child_id, file_count in counts.most_common(64):
+            child_label = child_id.rsplit("/", 1)[-1]
+            child_type, role, _, confidence = self._classify_node(child_id.split("/", 1)[0], scan)
+            if "." in child_label and file_count == 1:
+                role = "file"
+                child_type = self._type_for_file(samples[child_id][0], scan)
+            children.append(
+                {
+                    "id": child_id,
+                    "label": child_label,
+                    "type": child_type,
+                    "role": role,
+                    "file_count": file_count,
+                    "confidence": confidence,
+                    "files": samples[child_id],
+                    "framework": self._node_framework(node_id, scan),
+                    "entrypoint": any(file in scan.entry_points for file in samples[child_id]),
+                }
+            )
+        return children
+
+    def _child_id_for_file(self, node_id: str, file: str, scan: RepositoryScan) -> str | None:
+        if not file or file.startswith(("http://", "https://")):
+            return None
+        if node_id == "manifest":
+            return f"manifest/{PurePosixPath(file).name}"
+        if node_id == "deployment":
+            parts = PurePosixPath(file).parts
+            if parts and parts[0] in {".github", "workflows"}:
+                return "/".join(parts[:2]) if len(parts) > 1 else parts[0]
+            return f"deployment/{PurePosixPath(file).name}"
+        if node_id == "root":
+            return f"root/{PurePosixPath(file).name}"
+        path = PurePosixPath(file)
+        if not (file == node_id or file.startswith(f"{node_id}/")):
+            if self._node_id_for_file(file, scan) != node_id:
+                return None
+        relative_parts = path.parts[len(PurePosixPath(node_id).parts):] if file.startswith(f"{node_id}/") else path.parts
+        if not relative_parts:
+            return None
+        if len(relative_parts) == 1:
+            return f"{node_id}/{relative_parts[0]}"
+        return f"{node_id}/{relative_parts[0]}"
+
+    @staticmethod
+    def _type_for_file(file: str, scan: RepositoryScan) -> str:
+        suffix = PurePosixPath(file).suffix.lower()
+        if suffix in {".tsx", ".jsx", ".css", ".scss"}:
+            return "frontend"
+        if suffix in {".py"}:
+            return "backend" if any(framework in scan.frameworks for framework in {"FastAPI", "Django", "Flask"}) else "shared"
+        if PurePosixPath(file).name in MANIFEST_NAMES:
+            return "config"
+        if suffix in {".md", ".mdx"}:
+            return "docs"
+        return "package"
+
+    @staticmethod
+    def _node_explanation(node: ArchitectureNode, scan: RepositoryScan) -> str:
+        framework = f" {node.framework}" if node.framework else ""
+        entry = " It is an entrypoint surface." if node.entrypoint else ""
+        return (
+            f"{node.label} is classified as {node.role or node.type} in the {node.group or node.type} domain."
+            f"{framework} signals and dependency evidence connect it to {node.dependency_count} graph relationships.{entry}"
+        )
+
+    def _risk_analysis(
+        self,
+        scan: RepositoryScan,
+        nodes: list[ArchitectureNode],
+        edges: list[ArchitectureEdge],
+        file_dependencies: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        adjacency: defaultdict[str, list[str]] = defaultdict(list)
+        incoming: Counter[str] = Counter()
+        outgoing: Counter[str] = Counter()
+        weights: Counter[str] = Counter()
+        node_by_id = {node.id: node for node in nodes}
+        for edge in edges:
+            adjacency[edge.source].append(edge.target)
+            incoming[edge.target] += 1
+            outgoing[edge.source] += 1
+            weights[edge.source] += edge.weight or 1
+            weights[edge.target] += edge.weight or 1
+
+        cycles = self._find_cycles(adjacency, set(node_by_id), limit=8)
+        file_adjacency: defaultdict[str, list[str]] = defaultdict(list)
+        file_ids: set[str] = set()
+        for dependency in file_dependencies:
+            if dependency.get("kind") == "asset":
+                continue
+            source_file = dependency.get("source_file")
+            target_file = dependency.get("target_file")
+            if not isinstance(source_file, str) or not isinstance(target_file, str):
+                continue
+            file_adjacency[source_file].append(target_file)
+            file_ids.add(source_file)
+            file_ids.add(target_file)
+        file_cycles = self._find_cycles(file_adjacency, file_ids, limit=8)
+        warnings: list[dict[str, Any]] = []
+        for cycle in cycles:
+            warnings.append(
+                {
+                    "type": "circular_dependency",
+                    "severity": "high" if len(cycle) <= 3 else "medium",
+                    "nodes": cycle,
+                    "message": f"Circular dependency path detected: {' -> '.join(cycle)}.",
+                    "recommendation": "Break the cycle by moving shared contracts into a lower-level module or introducing an API boundary.",
+                }
+            )
+        for cycle in file_cycles:
+            warnings.append(
+                {
+                    "type": "circular_dependency",
+                    "severity": "high" if len(cycle) <= 4 else "medium",
+                    "nodes": cycle,
+                    "message": f"File-level circular dependency path detected: {' -> '.join(cycle)}.",
+                    "recommendation": "Move shared code into a lower-level module or reverse one import direction.",
+                }
+            )
+
+        degree_threshold = max(4, int(len(edges) * 0.25))
+        for node in nodes:
+            degree = incoming[node.id] + outgoing[node.id]
+            if degree >= degree_threshold:
+                warnings.append(
+                    {
+                        "type": "oversized_hub",
+                        "severity": "medium",
+                        "nodes": [node.id],
+                        "message": f"{node.id} is a high-coupling hub with {degree} graph relationships.",
+                        "recommendation": "Split responsibilities or document ownership boundaries before adding more dependencies.",
+                    }
+                )
+
+        for edge in edges:
+            source = node_by_id.get(edge.source)
+            target = node_by_id.get(edge.target)
+            if not source or not target:
+                continue
+            if edge.kind == "import" and source.type == "frontend" and target.type == "backend":
+                warnings.append(
+                    {
+                        "type": "layering_violation",
+                        "severity": "high",
+                        "nodes": [edge.source, edge.target],
+                        "message": f"{edge.source} imports {edge.target}; frontend should generally call backend through HTTP/API contracts.",
+                        "recommendation": "Move shared types into a shared package or replace direct imports with API client boundaries.",
+                    }
+                )
+            if edge.kind == "import" and source.type == "infra" and target.type in {"frontend", "backend"}:
+                warnings.append(
+                    {
+                        "type": "infra_leakage",
+                        "severity": "medium",
+                        "nodes": [edge.source, edge.target],
+                        "message": f"Infrastructure node {edge.source} imports runtime node {edge.target}.",
+                        "recommendation": "Keep deployment automation declarative and avoid coupling it to application internals.",
+                    }
+                )
+
+        risk_score = min(100, (len(cycles) + len(file_cycles)) * 18 + len(warnings) * 7 + sum(1 for node in nodes if node.dependency_count >= degree_threshold) * 5)
+        if risk_score >= 70:
+            level = "high"
+        elif risk_score >= 30:
+            level = "medium"
+        else:
+            level = "low"
+        return {
+            "score": risk_score,
+            "level": level,
+            "warnings": warnings[:14],
+            "cycle_count": len(cycles) + len(file_cycles),
+            "high_coupling_nodes": [
+                {"id": node.id, "degree": incoming[node.id] + outgoing[node.id], "weight": round(weights[node.id], 2)}
+                for node in sorted(nodes, key=lambda item: weights[item.id], reverse=True)
+                if incoming[node.id] + outgoing[node.id] >= degree_threshold
+            ][:8],
+            "recommendations": self._risk_recommendations(warnings, scan),
+        }
+
+    @staticmethod
+    def _find_cycles(adjacency: dict[str, list[str]], node_ids: set[str], limit: int = 8) -> list[list[str]]:
+        cycles: list[list[str]] = []
+
+        def visit(start: str, node: str, path: list[str]) -> None:
+            if len(cycles) >= limit or len(path) > 8:
+                return
+            for neighbor in adjacency.get(node, []):
+                if neighbor not in node_ids:
+                    continue
+                if neighbor == start and len(path) > 1:
+                    cycle = path + [start]
+                    normalized = cycle[cycle.index(min(cycle[:-1])):-1]
+                    normalized.append(normalized[0])
+                    if normalized not in cycles:
+                        cycles.append(normalized)
+                elif neighbor not in path:
+                    visit(start, neighbor, path + [neighbor])
+
+        for node in sorted(node_ids):
+            visit(node, node, [node])
+            if len(cycles) >= limit:
+                break
+        return cycles
+
+    @staticmethod
+    def _risk_recommendations(warnings: list[dict[str, Any]], scan: RepositoryScan) -> list[str]:
+        recommendations = []
+        warning_types = {warning["type"] for warning in warnings}
+        if "circular_dependency" in warning_types:
+            recommendations.append("Extract shared contracts from circular paths and enforce one-way dependency rules.")
+        if "layering_violation" in warning_types:
+            recommendations.append("Keep frontend/backend boundaries explicit with API clients or shared DTO packages.")
+        if "oversized_hub" in warning_types:
+            recommendations.append("Review high-degree hubs before onboarding contributors into those modules.")
+        if "infra_leakage" in warning_types:
+            recommendations.append("Separate deployment automation from runtime implementation imports.")
+        if not recommendations and scan.entry_points:
+            recommendations.append("Architecture risk looks controlled; keep entrypoint and dependency documentation current.")
+        return recommendations[:5]
+
+    @staticmethod
+    def _hotspots(
+        nodes: list[ArchitectureNode],
+        edges: list[ArchitectureEdge],
+        risk_analysis: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        risk_nodes = Counter()
+        for warning in risk_analysis.get("warnings", []):
+            severity_weight = {"low": 1, "medium": 2, "high": 3}.get(warning.get("severity"), 1)
+            for node_id in warning.get("nodes", []):
+                risk_nodes[node_id] += severity_weight
+
+        edge_pressure = Counter()
+        for edge in edges:
+            edge_pressure[edge.source] += edge.weight or 1
+            edge_pressure[edge.target] += edge.weight or 1
+
+        hotspots = []
+        for node in nodes:
+            file_count = 0
+            if isinstance(node.metadata, dict):
+                value = node.metadata.get("file_count", 0)
+                file_count = value if isinstance(value, int) else 0
+            pressure = edge_pressure[node.id] + node.dependency_count * 0.8 + min(20, file_count / 8) + risk_nodes[node.id] * 4
+            if pressure <= 0:
+                continue
+            hotspots.append(
+                {
+                    "id": node.id,
+                    "label": node.label,
+                    "type": node.type,
+                    "pressure": round(pressure, 2),
+                    "intensity": round(min(1.0, pressure / 40), 3),
+                    "risk": risk_nodes[node.id],
+                    "dependency_count": node.dependency_count,
+                    "file_count": file_count,
+                    "reason": f"{node.label} has {node.dependency_count} dependencies, {file_count} indexed files, and {risk_nodes[node.id]} risk signals.",
+                }
+            )
+        return sorted(hotspots, key=lambda item: item["pressure"], reverse=True)[:12]
+
+    def _topology(
+        self,
+        scan: RepositoryScan,
+        nodes: list[ArchitectureNode],
+        edges: list[ArchitectureEdge],
+        file_dependencies: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        workspace_roots = self._workspace_roots(scan)
+        workspaces = []
+        for root in workspace_roots:
+            files = [file for file in scan.files if file.startswith(f"{root}/")]
+            if files:
+                workspaces.append(
+                    {
+                        "id": root,
+                        "label": root,
+                        "file_count": len(files),
+                        "domain": self._workspace_domain(root),
+                        "package_manifest": f"{root}/package.json" if f"{root}/package.json" in scan.files else None,
+                    }
+                )
+
+        workspace_edges = []
+        for edge in edges:
+            source_root = self._workspace_for_node(edge.source, workspace_roots)
+            target_root = self._workspace_for_node(edge.target, workspace_roots)
+            if source_root and target_root and source_root != target_root:
+                workspace_edges.append(
+                    {
+                        "source": source_root,
+                        "target": target_root,
+                        "weight": edge.weight,
+                        "kind": edge.kind,
+                        "reason": edge.reasons[:2],
+                    }
+                )
+
+        return {
+            "monorepo": bool(workspaces) or any(manager in scan.package_managers for manager in {"pnpm", "Yarn"}),
+            "workspace_roots": workspace_roots,
+            "workspaces": workspaces[:40],
+            "workspace_edges": workspace_edges[:80],
+            "domains": self._ownership_domains(nodes),
+            "framework_analyzers": self._framework_analyzers(scan),
+            "critical_chains": self._critical_chains(edges),
+            "dependency_sample": file_dependencies[:60],
+        }
+
+    @staticmethod
+    def _workspace_roots(scan: RepositoryScan) -> list[str]:
+        roots = set()
+        for file in scan.files:
+            parts = PurePosixPath(file).parts
+            if not parts:
+                continue
+            if parts[0] in {"apps", "packages", "libs", "modules", "services"} and len(parts) > 1:
+                roots.add("/".join(parts[:2]))
+            elif PurePosixPath(file).name == "package.json" and len(parts) > 1:
+                roots.add("/".join(parts[:-1]))
+        package = next((manifest for path, manifest in scan.manifests.items() if PurePosixPath(path).name == "package.json" and isinstance(manifest, dict)), None)
+        if isinstance(package, dict):
+            workspaces = package.get("workspaces")
+            if isinstance(workspaces, list):
+                for pattern in workspaces:
+                    if isinstance(pattern, str):
+                        roots.add(pattern.rstrip("/*"))
+            elif isinstance(workspaces, dict) and isinstance(workspaces.get("packages"), list):
+                for pattern in workspaces["packages"]:
+                    if isinstance(pattern, str):
+                        roots.add(pattern.rstrip("/*"))
+        return sorted(root for root in roots if root and root != ".")[:60]
+
+    @staticmethod
+    def _workspace_domain(root: str) -> str:
+        first = root.split("/", 1)[0]
+        return {
+            "apps": "application",
+            "packages": "package",
+            "libs": "library",
+            "services": "service",
+            "modules": "module",
+        }.get(first, "package")
+
+    @staticmethod
+    def _workspace_for_node(node_id: str, roots: list[str]) -> str | None:
+        for root in roots:
+            if node_id == root or node_id.startswith(f"{root}/") or node_id == root.split("/", 1)[0]:
+                return root
+        return None
+
+    @staticmethod
+    def _ownership_domains(nodes: list[ArchitectureNode]) -> list[dict[str, Any]]:
+        grouped: defaultdict[str, list[str]] = defaultdict(list)
+        for node in nodes:
+            grouped[node.group or node.type].append(node.id)
+        return [
+            {"domain": domain, "nodes": sorted(node_ids), "node_count": len(node_ids)}
+            for domain, node_ids in sorted(grouped.items())
+        ]
+
+    @staticmethod
+    def _framework_analyzers(scan: RepositoryScan) -> list[dict[str, Any]]:
+        analyzers = []
+        file_names = {PurePosixPath(file).name for file in scan.files}
+        if "Next.js" in scan.frameworks:
+            routes = [file for file in scan.files if re.search(r"(^|/)app/.+/(page|route|layout)\.(tsx|ts|jsx|js)$", file) or re.search(r"(^|/)pages/.+\.(tsx|ts|jsx|js)$", file)]
+            analyzers.append({"framework": "Next.js", "routes": routes[:40], "middleware": [file for file in scan.files if PurePosixPath(file).name.startswith("middleware.")][:8]})
+        if "React" in scan.frameworks:
+            analyzers.append({"framework": "React", "components": [file for file in scan.files if re.search(r"(^|/)(components|src)/.+\.(tsx|jsx)$", file)][:40]})
+        if "FastAPI" in scan.frameworks:
+            analyzers.append({"framework": "FastAPI", "entrypoints": [file for file in scan.entry_points if file.endswith(".py")], "routers": [file for file in scan.files if "router" in file.lower() or "/api/" in file][:30]})
+        if "Express" in scan.frameworks:
+            analyzers.append({"framework": "Express", "servers": [file for file in scan.files if PurePosixPath(file).name in {"server.js", "server.ts", "app.js", "app.ts"}][:12]})
+        if "NestJS" in scan.frameworks:
+            analyzers.append({"framework": "NestJS", "modules": [file for file in scan.files if file.endswith(".module.ts")][:40], "controllers": [file for file in scan.files if file.endswith(".controller.ts")][:40]})
+        if "Django" in scan.frameworks:
+            analyzers.append({"framework": "Django", "settings": [file for file in scan.files if file.endswith("settings.py")][:10], "urls": [file for file in scan.files if file.endswith("urls.py")][:20]})
+        if "Prisma" in scan.frameworks or "schema.prisma" in file_names:
+            analyzers.append({"framework": "Prisma", "schemas": [file for file in scan.files if PurePosixPath(file).name == "schema.prisma"]})
+        if "Tailwind CSS" in scan.frameworks:
+            analyzers.append({"framework": "Tailwind CSS", "configs": [file for file in scan.files if PurePosixPath(file).name.startswith("tailwind.config.")]})
+        if any(name in file_names for name in {"Dockerfile", "docker-compose.yml", "docker-compose.yaml"}):
+            analyzers.append({"framework": "Docker", "configs": [file for file in scan.files if PurePosixPath(file).name in {"Dockerfile", "docker-compose.yml", "docker-compose.yaml"}]})
+        if any(file.startswith(".github/workflows/") for file in scan.files):
+            analyzers.append({"framework": "GitHub Actions", "workflows": [file for file in scan.files if file.startswith(".github/workflows/")][:40]})
+        return analyzers
+
+    @staticmethod
+    def _critical_chains(edges: list[ArchitectureEdge]) -> list[dict[str, Any]]:
+        return [
+            {
+                "source": edge.source,
+                "target": edge.target,
+                "weight": edge.weight,
+                "kind": edge.kind,
+                "label": edge.label,
+                "reason": edge.reasons[:2],
+            }
+            for edge in sorted(edges, key=lambda item: item.weight or 0, reverse=True)[:8]
+        ]
+
+    def _evolution(self, scan: RepositoryScan) -> dict[str, Any]:
+        repo_path = Path(scan.path)
+        try:
+            from git import Repo
+
+            repo = Repo(repo_path, search_parent_directories=False)
+        except Exception:
+            return {"available": False, "reason": "Git history is unavailable for this analysis checkout."}
+
+        churn: Counter[str] = Counter()
+        commits = []
+        try:
+            for commit in repo.iter_commits(max_count=80):
+                touched = list(commit.stats.files)[:80]
+                for file in touched:
+                    churn[self._node_id_for_file(file.replace("\\", "/"), scan)] += 1
+                commits.append(
+                    {
+                        "sha": commit.hexsha[:8],
+                        "date": commit.committed_datetime.date().isoformat(),
+                        "summary": commit.summary[:120],
+                        "files_changed": len(touched),
+                    }
+                )
+        except Exception:
+            return {"available": False, "reason": "Git history could not be read safely."}
+
+        return {
+            "available": bool(commits),
+            "commits_sampled": len(commits),
+            "recent_commits": commits[:12],
+            "churn_by_node": [{"id": node_id, "changes": count} for node_id, count in churn.most_common(12)],
+            "drift_summary": "Recent commit history is summarized as module churn; compare hotspots with churn to spot architecture drift.",
+        }
 
     @staticmethod
     def _connected_ratio(nodes: list[ArchitectureNode], edges: list[ArchitectureEdge]) -> float:

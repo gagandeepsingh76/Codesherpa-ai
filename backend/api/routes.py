@@ -91,6 +91,14 @@ async def intelligence(repo_id: str) -> dict:
     return data
 
 
+@router.get("/code-intelligence/{repo_id}")
+async def code_intelligence(repo_id: str) -> dict:
+    data = workflow.code_intelligence_payload(repo_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Repository code intelligence not found.")
+    return data
+
+
 @router.get("/repo-summary/{repo_id}")
 async def repo_summary(repo_id: str) -> dict:
     data = workflow.repo_summary(repo_id)

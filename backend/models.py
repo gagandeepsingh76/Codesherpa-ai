@@ -84,6 +84,11 @@ class ArchitectureMap(BaseModel):
     confidence: Confidence
     framework_signals: list[str] = Field(default_factory=list)
     graph_metrics: dict[str, Any] = Field(default_factory=dict)
+    file_graph: dict[str, Any] = Field(default_factory=dict)
+    risk_analysis: dict[str, Any] = Field(default_factory=dict)
+    hotspots: list[dict[str, Any]] = Field(default_factory=list)
+    topology: dict[str, Any] = Field(default_factory=dict)
+    evolution: dict[str, Any] = Field(default_factory=dict)
 
 
 class OnboardingStep(BaseModel):
@@ -172,6 +177,91 @@ class RepositoryIntelligence(BaseModel):
     confidence: Confidence
 
 
+class CodeSymbol(BaseModel):
+    id: str
+    name: str
+    type: str
+    file: str
+    line: int | None = None
+    end_line: int | None = None
+    language: str
+    runtime_role: str | None = None
+    signature: str | None = None
+    imports: list[str] = Field(default_factory=list)
+    used_by: list[str] = Field(default_factory=list)
+    calls: list[str] = Field(default_factory=list)
+    decorators: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RouteEndpoint(BaseModel):
+    id: str
+    method: str
+    path: str
+    file: str
+    line: int | None = None
+    framework: str
+    controller: str | None = None
+    middleware: list[str] = Field(default_factory=list)
+    auth_required: bool = False
+    dependencies: list[str] = Field(default_factory=list)
+    symbols: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AuthFlow(BaseModel):
+    strategies: list[str] = Field(default_factory=list)
+    files: list[str] = Field(default_factory=list)
+    login_routes: list[RouteEndpoint] = Field(default_factory=list)
+    token_issuers: list[str] = Field(default_factory=list)
+    validators: list[str] = Field(default_factory=list)
+    protected_routes: list[RouteEndpoint] = Field(default_factory=list)
+    role_enforcement: list[str] = Field(default_factory=list)
+    session_persistence: list[str] = Field(default_factory=list)
+    explanation: str = "No explicit authentication flow was detected from code symbols."
+    confidence: Confidence = "low"
+
+
+class StateFlow(BaseModel):
+    libraries: list[str] = Field(default_factory=list)
+    stores: list[CodeSymbol] = Field(default_factory=list)
+    providers: list[CodeSymbol] = Field(default_factory=list)
+    hooks: list[CodeSymbol] = Field(default_factory=list)
+    cache_layers: list[CodeSymbol] = Field(default_factory=list)
+    shared_state_boundaries: list[str] = Field(default_factory=list)
+    relationships: list[dict[str, Any]] = Field(default_factory=list)
+    explanation: str = "No explicit frontend state management layer was detected from code symbols."
+    confidence: Confidence = "low"
+
+
+class SemanticMemoryItem(BaseModel):
+    id: str
+    type: str
+    title: str
+    file: str | None = None
+    line: int | None = None
+    symbol: str | None = None
+    route: str | None = None
+    summary: str
+    keywords: list[str] = Field(default_factory=list)
+    importance: float = 0.0
+    relations: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RepositoryCodeIntelligence(BaseModel):
+    symbols: list[CodeSymbol] = Field(default_factory=list)
+    symbol_graph: dict[str, Any] = Field(default_factory=dict)
+    routes: list[RouteEndpoint] = Field(default_factory=list)
+    auth: AuthFlow = Field(default_factory=AuthFlow)
+    state: StateFlow = Field(default_factory=StateFlow)
+    runtime: dict[str, Any] = Field(default_factory=dict)
+    deployment: dict[str, Any] = Field(default_factory=dict)
+    semantic_memory: list[SemanticMemoryItem] = Field(default_factory=list)
+    retrieval_stats: dict[str, Any] = Field(default_factory=dict)
+    confidence: Confidence = "low"
+
+
 class RepositorySummary(BaseModel):
     repo_id: str
     repo_url: str
@@ -196,6 +286,7 @@ class AnalysisResult(BaseModel):
     architecture: ArchitectureMap
     contributor_plan: ContributorPlan
     intelligence: RepositoryIntelligence
+    code_intelligence: RepositoryCodeIntelligence = Field(default_factory=RepositoryCodeIntelligence)
     timeline: list[TimelineEvent]
     agent_manifest: dict[str, Any]
 
@@ -204,6 +295,9 @@ class ChatResponse(BaseModel):
     repo_id: str
     answer: str
     cited_files: list[str]
+    cited_symbols: list[str] = Field(default_factory=list)
+    cited_routes: list[str] = Field(default_factory=list)
+    context_items: list[SemanticMemoryItem] = Field(default_factory=list)
     confidence: Confidence
     remembered: bool = True
 
