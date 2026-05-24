@@ -1,4 +1,5 @@
 import { demoAnalysis } from "@/lib/demo-data";
+import { normalizeTimelineEvent, normalizeTimelineEvents } from "@/lib/timeline";
 import type { AnalysisResult, ChatResponse, TimelineEvent } from "@/lib/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -70,7 +71,7 @@ function normalizeAnalysis(candidate: Partial<AnalysisResult>): AnalysisResult {
       symbol_graph: candidate.code_intelligence?.symbol_graph ?? demoAnalysis.code_intelligence.symbol_graph,
       retrieval_stats: candidate.code_intelligence?.retrieval_stats ?? demoAnalysis.code_intelligence.retrieval_stats,
     },
-    timeline: candidate.timeline ?? demoAnalysis.timeline,
+    timeline: normalizeTimelineEvents(candidate.timeline ?? demoAnalysis.timeline),
     agent_manifest: { ...demoAnalysis.agent_manifest, ...candidate.agent_manifest },
   };
 }
@@ -98,15 +99,25 @@ function analyzeWithSse(repoUrl: string, onTimelineEvent: (event: TimelineEvent)
     }, 120000);
 
     source.addEventListener("timeline", (event) => {
-      onTimelineEvent(JSON.parse((event as MessageEvent).data) as TimelineEvent);
+      try {
+        const normalized = normalizeTimelineEvent(JSON.parse((event as MessageEvent).data));
+        if (normalized) onTimelineEvent(normalized);
+      } catch {
+        const normalized = normalizeTimelineEvent({ status: "running", metadata: { event_type: "unknown" } });
+        if (normalized) onTimelineEvent(normalized);
+      }
     });
 
     source.addEventListener("complete", (event) => {
       window.clearTimeout(timeout);
       source.close();
-      const result = JSON.parse((event as MessageEvent).data) as AnalysisResult;
-      saveAnalysis(result);
-      resolve(result);
+      try {
+        const result = normalizeAnalysis(JSON.parse((event as MessageEvent).data) as Partial<AnalysisResult>);
+        saveAnalysis(result);
+        resolve(result);
+      } catch (cause) {
+        reject(cause);
+      }
     });
 
     source.addEventListener("error", (event) => {
@@ -147,7 +158,7 @@ async function analyzeWithPost(repoUrl: string, onTimelineEvent: (event: Timelin
   if (!response.ok) {
     throw new Error(await response.text());
   }
-  const result = (await response.json()) as AnalysisResult;
+  const result = normalizeAnalysis((await response.json()) as Partial<AnalysisResult>);
   saveAnalysis(result);
   return result;
 }

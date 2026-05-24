@@ -52,7 +52,7 @@ export function RepositoryDashboard() {
 
   return (
     <div className="space-y-6">
-      <section className="grid gap-6 lg:grid-cols-[1fr_420px]">
+      <section className="grid items-start gap-6 lg:grid-cols-[minmax(0,0.95fr)_minmax(540px,1.05fr)] xl:grid-cols-[minmax(0,0.95fr)_minmax(600px,1.05fr)]">
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
@@ -90,7 +90,7 @@ export function RepositoryDashboard() {
           </div>
         </motion.div>
 
-        <TimelinePanel events={events} compact />
+        <TimelinePanel events={events} compact layout="console" />
       </section>
 
       <section className="grid gap-6 lg:grid-cols-[360px_1fr]">
