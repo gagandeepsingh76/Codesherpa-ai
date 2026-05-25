@@ -27,7 +27,7 @@ CodeSherpa AI enables developers, contributors, and engineering teams to deeply 
 
 ## Live Application
 
-https://codesherpaai.vercel.app
+https://codesherpa-ai.vercel.app/
 
 ## Backend API
 
